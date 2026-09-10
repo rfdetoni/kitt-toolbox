@@ -249,8 +249,7 @@ mod tests {
         for i in 0..500 {
             writeln!(f, "line-{i:04} {}", "x".repeat(40)).unwrap();
         }
-        let response =
-            read_file(&root, "many.txt", 1, Some(500), 4 * 1024 * 1024, 64).unwrap();
+        let response = read_file(&root, "many.txt", 1, Some(500), 4 * 1024 * 1024, 64).unwrap();
         assert!(response.estimated_tokens <= 80);
         assert!(response.next_start_line.is_some());
         assert!(read_file(&root, "../outside", 1, None, 1024, 64).is_err());
