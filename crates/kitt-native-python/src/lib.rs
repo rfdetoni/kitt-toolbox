@@ -1,7 +1,5 @@
 use kitt_native_engine::model::{EditRequest, SearchOptions};
-use kitt_native_engine::{
-    NativeEngine, compress_process_output_with_budget,
-};
+use kitt_native_engine::{NativeEngine, compress_process_output_with_budget};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -131,12 +129,7 @@ impl Engine {
     }
 
     #[pyo3(signature=(path, limit=100, token_budget=600))]
-    fn list_files(
-        &self,
-        path: String,
-        limit: usize,
-        token_budget: usize,
-    ) -> PyResult<String> {
+    fn list_files(&self, path: String, limit: usize, token_budget: usize) -> PyResult<String> {
         json(
             &self
                 .inner
