@@ -1,19 +1,93 @@
-# KITT Toolbox
+# K.I.T.T. Toolbox
 
-> Shared low-overhead system inspection and resource probe utilities for KITT.
+<p align="center">
+  <strong>Shared native data plane for K.I.T.T.</strong><br>
+  Rust code intelligence · bounded repository operations · PyO3 acceleration · lightweight system probes
+</p>
 
-Minimal, efficient Rust utility for capturing point-in-time system snapshots (CPU, memory, mount points, and disk space) without bloat.
+<p align="center">
+  <a href="https://github.com/rfdetoni/kitt-toolbox/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Rust 1.85+" src="https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white">
+  <img alt="Python native" src="https://img.shields.io/badge/Python-PyO3-3776AB?logo=python&logoColor=white">
+</p>
+
+K.I.T.T. Toolbox owns the deterministic native capabilities shared by the K.I.T.T. ecosystem. It combines low-overhead host inspection with the Rust `kitt-native-engine` used to accelerate repository search, symbol analysis, edits and bounded output handling behind the Agent’s stable runtime surface.
+
+The Agent does not depend on native code semantically: when the `kitt_native` extension is unavailable it can use its portable Python fallback. This repository exists to make the hot data path faster without coupling model-facing behavior to Rust.
 
 ---
 
-## 🚀 CLI Usage
+## What’s included
+
+- `kitt-native-engine`: Rust repository/code-intelligence core.
+- `kitt-native-python`: PyO3 extension exported as `kitt_native`.
+- Workspace discovery and bounded file traversal.
+- Text/repository search primitives.
+- Symbol extraction and language-aware parsing.
+- Deterministic edit operations.
+- Bounded process/output representations.
+- Language support built around Tree-sitter grammars for Python, Java, JavaScript, TypeScript, Rust and Go.
+- Lightweight CPU, memory and disk snapshot utility.
+- Reproducible native-wheel build helper.
+
+---
+
+## Quick links
+
+- **K.I.T.T. ecosystem:** https://github.com/rfdetoni/kitt
+- **Agent CLI:** https://github.com/rfdetoni/kitt-agent-cli
+- **Protocol boundary:** [PROTOCOL_BOUNDARY.md](PROTOCOL_BOUNDARY.md)
+- **Manual:** [MANUAL.md](MANUAL.md)
+- **Security:** [SECURITY.md](SECURITY.md)
+
+---
+
+## Requirements & compatibility
+
+- Rust **1.85+** / edition 2024.
+- Python is only required when building the PyO3 wheel.
+- `maturin` is used by the native-wheel release helper.
+
+The Python extension uses PyO3’s stable ABI (`abi3`) so the native backend can remain compatible across supported CPython versions without building a separate wheel for every interpreter minor version.
+
+---
+
+## Architecture
+
+```text
+kitt-toolbox
+│
+├── crates/kitt-native-engine/
+│   ├── workspace      bounded workspace traversal
+│   ├── search         repository/text search
+│   ├── symbols        language-aware symbol extraction
+│   ├── language       Tree-sitter language support
+│   ├── edit           deterministic source edits
+│   ├── output         bounded output/data representations
+│   └── model          shared native models
+│
+├── crates/kitt-native-python/
+│   └── kitt_native    PyO3 bridge used by KITT Agent
+│
+├── src/
+│   └── lightweight system snapshot utility
+│
+└── packaging/
+    └── native wheel build tooling
+```
+
+The ownership boundary is deliberate: `kitt-agent-cli` owns orchestration and policy; `kitt-toolbox` owns deterministic native execution primitives.
+
+---
+
+## System snapshot CLI
 
 ```bash
-# Output JSON snapshot of host system resources
 cargo run --release -- snapshot
 ```
 
-Sample output:
+Example shape:
+
 ```json
 {
   "total_memory_bytes": 10352185344,
@@ -30,29 +104,73 @@ Sample output:
 }
 ```
 
+The same probe is available as a Rust library API.
+
 ---
 
-## 🛠️ Library Usage
+## Native Python acceleration
 
-```rust
-use kitt_toolbox::snapshot;
+Build the shared `kitt_native` wheel:
 
-let res = snapshot();
-println!("CPU: {:.1}% | Available RAM: {} MB", res.cpu_usage_percent, res.available_memory_bytes / 1024 / 1024);
+```bash
+python -m pip install maturin
+python packaging/build_native_release.py
 ```
 
+The helper builds `crates/kitt-native-python` in release mode and writes wheels to `dist-native/` by default.
+
+K.I.T.T. Agent discovers the extension through its native bridge. No model-facing API changes when switching between the native and portable backends.
+
 ---
 
-## 🧪 Testing & Linting
+## Performance philosophy
+
+Native code is used only where deterministic CPU/data work benefits from it. The goal is not to move orchestration into Rust; it is to make repository operations fast and predictable while preserving the simpler Python control plane.
+
+Design priorities include bounded traversal/output, minimal serialization across the PyO3 boundary, native parsing/search where it pays off and no resident heavyweight runtime solely for acceleration.
+
+---
+
+## Security
+
+Native operations are still downstream of Agent policy. The extension does not grant authority by itself: workspace containment, approvals and capability checks remain owned by the calling control plane.
+
+Repository operations should remain deterministic, bounded and explicit. See [SECURITY.md](SECURITY.md) and [PROTOCOL_BOUNDARY.md](PROTOCOL_BOUNDARY.md) for component boundaries.
+
+---
+
+## Testing & linting
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
+
+Native-wheel behavior is also exercised by the ecosystem’s composed Agent validation.
 
 ---
 
-## 📄 License
+## Contributing
 
-MIT License. See [LICENSE](LICENSE).
+Prefer native implementations for measured hot paths, not as a default rewrite strategy. Changes should preserve deterministic behavior, bounded resource use and compatibility with the Agent’s portable fallback.
+
+---
+
+## K.I.T.T. ecosystem
+
+| Repository | Responsibility |
+| --- | --- |
+| [`kitt`](https://github.com/rfdetoni/kitt) | installer and ecosystem composition |
+| [`kitt-agent-cli`](https://github.com/rfdetoni/kitt-agent-cli) | autonomous agent control plane |
+| [`kitt-reverse-proxy`](https://github.com/rfdetoni/kitt-reverse-proxy) | authorized provider gateway |
+| [`kitt-protocol`](https://github.com/rfdetoni/kitt-protocol) | shared contracts and SDKs |
+| [`kitt-memory`](https://github.com/rfdetoni/kitt-memory) | persistent memory engine |
+| [`kitt-ai-workers`](https://github.com/rfdetoni/kitt-ai-workers) | isolated AI/ML workers and evals |
+| [`kitt-assistant`](https://github.com/rfdetoni/kitt-assistant) | resident assistant and Control Center |
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
