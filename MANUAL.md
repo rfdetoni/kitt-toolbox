@@ -1,86 +1,48 @@
 # Manual do K.I.T.T. Toolbox (`kitt-toolbox`)
 
-> Ferramentas de sistema nativas, diagnósticos de baixo overhead, coleta de métricas e execução segura de sondas para o ecossistema K.I.T.T.
+> Data plane nativo do ecossistema K.I.T.T. para busca, símbolos, edição determinística, leitura limitada do workspace e compressão de saída.
 
----
+## 1. Escopo
 
-## 1. Visão Geral
+O `kitt-toolbox` contém apenas capacidades nativas efetivamente consumidas pelo ecossistema:
 
-O **`kitt-toolbox`** fornece utilitários e sondas de diagnóstico escritas em Rust com consumo mínimo de recursos de CPU e memória.
-Ele permite que o agente e o assistente obtenham instantâneos (*snapshots*) do estado da máquina, processos em execução, uso de RAM/Swap, disco e status do repositório Git sem a necessidade de comandos bash custosos.
+- `kitt-native-engine`: núcleo Rust de code intelligence;
+- `kitt-native-python`: bridge PyO3 exportada como `kitt_native`;
+- busca textual e por regex;
+- descoberta/leitura de símbolos e referências;
+- edição de símbolos com validação;
+- leitura/listagem limitada do workspace;
+- compressão limitada de saída de processos.
 
----
+Sondagem de CPU/RAM/disco não faz parte deste componente. O antigo executável de snapshot não era instalado nem utilizado pelos demais módulos e foi removido.
 
-## 2. Requisitos de Sistema
+## 2. Requisitos
 
-- **Rust**: 1.80+ (com `cargo`)
-- Compatível nativamente com **Linux**, **macOS** e **Windows**.
+- Rust 1.85+;
+- Python 3.12+ para construir/testar o wheel;
+- `maturin>=1.8,<2` para empacotamento Python.
 
----
+## 3. Validação Rust
 
-## 3. Instalação e Compilação por Sistema Operacional
-
-### 🐧 A. LINUX
 ```bash
-cargo build --release
-cargo test
-sudo cp target/release/kitt-toolbox /usr/local/bin/ # Opcional
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-### 🍏 B. macOS
+## 4. Build do backend Python
+
 ```bash
-cargo build --release
-cargo test
-cp target/release/kitt-toolbox /usr/local/bin/ # Opcional
+python -m pip install 'maturin>=1.8,<2'
+python packaging/build_native_release.py --out dist-native
+python -m pip install --no-deps dist-native/*.whl
+python -c "import kitt_native; print(kitt_native.ENGINE_VERSION)"
 ```
 
-### 🪟 C. WINDOWS (PowerShell)
-```powershell
-cargo build --release
-cargo test
-# O executável estará em target\release\kitt-toolbox.exe
-```
+O wheel usa ABI estável do PyO3 e é descoberto automaticamente pelo `kitt-agent-cli`. Se a extensão não estiver disponível, o Agent mantém seus fallbacks portáteis onde suportado.
 
----
+## 5. Responsabilidade arquitetural
 
-## 4. Guia de Uso e Comandos da CLI
+O Toolbox não decide autorização, autonomia ou política de ferramentas. Ele fornece operações determinísticas e limitadas; a autoridade permanece no control plane do `kitt-agent-cli`.
 
-### 1. Obter Snapshot Completo do Sistema em JSON:
-```bash
-cargo run --release -- snapshot
-```
-*Saída de exemplo:*
-```json
-{
-  "timestamp": 1787330000,
-  "system": {
-    "os": "linux",
-    "cpu_count": 8,
-    "memory_total_bytes": 17179869184,
-    "memory_available_bytes": 10737418240
-  },
-  "git": {
-    "branch": "main",
-    "clean": true
-  }
-}
-```
-
-### 2. Verificar Recursos de Memória e Carga de CPU:
-```bash
-cargo run --release -- probe system
-```
-
-### 3. Inspecionar Estado de Processos Locais do KITT:
-```bash
-cargo run --release -- probe processes
-```
-
----
-
-## 5. Validação e Testes
-```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
+Também não depende de `kitt-protocol`: adaptação de IPC/transporte pertence ao processo hospedeiro.
