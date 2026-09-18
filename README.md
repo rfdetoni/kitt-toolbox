@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Shared native data plane for K.I.T.T.</strong><br>
-  Rust code intelligence · bounded repository operations · PyO3 acceleration · lightweight system probes
+  Rust code intelligence · bounded repository operations · PyO3 acceleration
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   <img alt="Python native" src="https://img.shields.io/badge/Python-PyO3-3776AB?logo=python&logoColor=white">
 </p>
 
-K.I.T.T. Toolbox owns the deterministic native capabilities shared by the K.I.T.T. ecosystem. It combines low-overhead host inspection with the Rust `kitt-native-engine` used to accelerate repository search, symbol analysis, edits and bounded output handling behind the Agent’s stable runtime surface.
+K.I.T.T. Toolbox owns the deterministic native capabilities shared by the K.I.T.T. ecosystem. It provides the Rust `kitt-native-engine` used to accelerate repository search, symbol analysis, edits and bounded output handling behind the Agent’s stable runtime surface.
 
 The Agent does not depend on native code semantically: when the `kitt_native` extension is unavailable it can use its portable Python fallback. This repository exists to make the hot data path faster without coupling model-facing behavior to Rust.
 
@@ -27,7 +27,6 @@ The Agent does not depend on native code semantically: when the `kitt_native` ex
 - Deterministic edit operations.
 - Bounded process/output representations.
 - Language support built around Tree-sitter grammars for Python, Java, JavaScript, TypeScript, Rust and Go.
-- Lightweight CPU, memory and disk snapshot utility.
 - Reproducible native-wheel build helper.
 
 ---
@@ -69,42 +68,11 @@ kitt-toolbox
 ├── crates/kitt-native-python/
 │   └── kitt_native    PyO3 bridge used by KITT Agent
 │
-├── src/
-│   └── lightweight system snapshot utility
-│
 └── packaging/
     └── native wheel build tooling
 ```
 
 The ownership boundary is deliberate: `kitt-agent-cli` owns orchestration and policy; `kitt-toolbox` owns deterministic native execution primitives.
-
----
-
-## System snapshot CLI
-
-```bash
-cargo run --release -- snapshot
-```
-
-Example shape:
-
-```json
-{
-  "total_memory_bytes": 10352185344,
-  "used_memory_bytes": 4653096960,
-  "available_memory_bytes": 5699088384,
-  "cpu_usage_percent": 1.5,
-  "disks": [
-    {
-      "mount": "/",
-      "total_bytes": 249792131072,
-      "available_bytes": 159918665728
-    }
-  ]
-}
-```
-
-The same probe is available as a Rust library API.
 
 ---
 
