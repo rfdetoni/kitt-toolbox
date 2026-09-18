@@ -6,6 +6,7 @@ members = [
 ]
 
 [workspace.package]
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
@@ -28,16 +29,3 @@ tree-sitter-rust = "0.24"
 tree-sitter-go = "0.23"
 pretty_assertions = "1"
 pyo3 = { version = "0.23", features = ["extension-module", "abi3"] }
-
-[package]
-name = "kitt-toolbox"
-version = "0.2.0"
-edition = "2024"
-rust-version = "1.85"
-license = "MIT"
-description = "Shared low-overhead system and native code-intelligence utilities for KITT"
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sysinfo = "0.33"
