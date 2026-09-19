@@ -1,6 +1,7 @@
 use crate::language::{grammar, identify};
-use crate::model::{EditRequest, EditResponse};
+use crate::model::{BlockReplaceRequest, BlockReplaceResponse, EditRequest, EditResponse};
 use crate::symbols::read_symbol;
+use crate::workspace::contained_existing;
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -26,6 +27,72 @@ fn validate(path: &Path, source: &[u8]) -> Result<()> {
         return Err(anyhow!("replacement introduces syntax errors"));
     }
     Ok(())
+}
+
+fn persist_atomic(path: &Path, metadata: &fs::Metadata, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| anyhow!("file has no parent"))?;
+    let mut temp = NamedTempFile::new_in(parent)?;
+    temp.write_all(bytes)?;
+    temp.flush()?;
+    temp.as_file().sync_all()?;
+    temp.as_file().set_permissions(metadata.permissions())?;
+    temp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("persist {}", path.display()))?;
+    Ok(())
+}
+
+pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockReplaceResponse> {
+    if request.search.is_empty() {
+        return Err(anyhow!("search block must not be empty"));
+    }
+    let (path, display) = contained_existing(root, &request.path)?;
+    let metadata = fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(anyhow!("path is not a regular file"));
+    }
+
+    let original = fs::read(&path)?;
+    let old_file_hash = hash(&original);
+    if let Some(expected) = &request.expected_file_hash
+        && expected != &old_file_hash
+    {
+        return Err(anyhow!("optimistic edit conflict: file hash changed"));
+    }
+    let text = std::str::from_utf8(&original)
+        .map_err(|_| anyhow!("block replacement requires a UTF-8 text file"))?;
+    let matches = text.match_indices(&request.search).count();
+    if matches == 0 {
+        return Err(anyhow!("search block was not found"));
+    }
+    if matches > 1 {
+        return Err(anyhow!(
+            "search block is ambiguous: matched {matches} locations; provide more context"
+        ));
+    }
+    if request.search == request.replacement {
+        return Ok(BlockReplaceResponse {
+            path: display,
+            old_file_hash: old_file_hash.clone(),
+            new_file_hash: old_file_hash,
+            replacements: 0,
+            changed: false,
+        });
+    }
+
+    let updated = text.replacen(&request.search, &request.replacement, 1);
+    let updated_bytes = updated.as_bytes();
+    if request.validate_syntax {
+        validate(&path, updated_bytes)?;
+    }
+    persist_atomic(&path, &metadata, updated_bytes)?;
+    Ok(BlockReplaceResponse {
+        path: display,
+        old_file_hash,
+        new_file_hash: hash(updated_bytes),
+        replacements: 1,
+        changed: true,
+    })
 }
 
 pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse> {
@@ -55,15 +122,7 @@ pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse>
     if request.validate_syntax {
         validate(&path, &bytes)?;
     }
-    let parent = path.parent().ok_or_else(|| anyhow!("file has no parent"))?;
-    let mut temp = NamedTempFile::new_in(parent)?;
-    temp.write_all(&bytes)?;
-    temp.flush()?;
-    temp.as_file().sync_all()?;
-    temp.as_file().set_permissions(metadata.permissions())?;
-    temp.persist(&path)
-        .map_err(|e| e.error)
-        .with_context(|| format!("persist {}", path.display()))?;
+    persist_atomic(&path, &metadata, &bytes)?;
 
     // Do not re-resolve the old symbol id after persistence: a valid structural
     // edit may intentionally rename or remove the symbol.  The edit is already
@@ -82,6 +141,70 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn block_replace_requires_unique_exact_context() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.py");
+        fs::write(&file, "x = 1\ny = 2\nx = 1\n").unwrap();
+
+        let ambiguous = replace_block(
+            dir.path(),
+            BlockReplaceRequest {
+                path: "sample.py".to_string(),
+                search: "x = 1".to_string(),
+                replacement: "x = 3".to_string(),
+                expected_file_hash: None,
+                validate_syntax: true,
+            },
+        );
+        assert!(ambiguous.unwrap_err().to_string().contains("ambiguous"));
+
+        let result = replace_block(
+            dir.path(),
+            BlockReplaceRequest {
+                path: "sample.py".to_string(),
+                search: "x = 1\ny = 2".to_string(),
+                replacement: "x = 3\ny = 4".to_string(),
+                expected_file_hash: None,
+                validate_syntax: true,
+            },
+        )
+        .unwrap();
+        assert!(result.changed);
+        assert_eq!(result.replacements, 1);
+        assert_eq!(fs::read_to_string(file).unwrap(), "x = 3\ny = 4\nx = 1\n");
+    }
+
+    #[test]
+    fn block_replace_rejects_stale_hash_and_path_escape() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("sample.txt"), "before\n").unwrap();
+
+        let stale = replace_block(
+            dir.path(),
+            BlockReplaceRequest {
+                path: "sample.txt".to_string(),
+                search: "before".to_string(),
+                replacement: "after".to_string(),
+                expected_file_hash: Some("stale".to_string()),
+                validate_syntax: false,
+            },
+        );
+        assert!(stale.unwrap_err().to_string().contains("file hash changed"));
+
+        let escaped = replace_block(
+            dir.path(),
+            BlockReplaceRequest {
+                path: "../outside.txt".to_string(),
+                search: "before".to_string(),
+                replacement: "after".to_string(),
+                expected_file_hash: None,
+                validate_syntax: false,
+            },
+        );
+        assert!(escaped.is_err());
+    }
 
     #[test]
     fn rename_does_not_report_failure_after_persist() {
