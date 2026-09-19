@@ -61,13 +61,13 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
     }
     let text = std::str::from_utf8(&original)
         .map_err(|_| anyhow!("block replacement requires a UTF-8 text file"))?;
-    let matches = text.match_indices(request.search.as_str()).count();
-    if matches == 0 {
+    let mut matches = text.match_indices(request.search.as_str());
+    let Some((start, _)) = matches.next() else {
         return Err(anyhow!("search block was not found"));
-    }
-    if matches > 1 {
+    };
+    if matches.next().is_some() {
         return Err(anyhow!(
-            "search block is ambiguous: matched {matches} locations; provide more context"
+            "search block is ambiguous: matched multiple locations; provide more context"
         ));
     }
     if request.search == request.replacement {
@@ -80,7 +80,12 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
         });
     }
 
-    let updated = text.replacen(request.search.as_str(), request.replacement.as_str(), 1);
+    let mut updated = String::with_capacity(
+        text.len() - request.search.len() + request.replacement.len(),
+    );
+    updated.push_str(&text[..start]);
+    updated.push_str(&request.replacement);
+    updated.push_str(&text[start + request.search.len()..]);
     let updated_bytes = updated.as_bytes();
     if request.validate_syntax {
         validate(&path, updated_bytes)?;
