@@ -1,4 +1,4 @@
-use kitt_native_engine::model::{EditRequest, SearchOptions};
+use kitt_native_engine::model::{BlockReplaceRequest, EditRequest, SearchOptions};
 use kitt_native_engine::{NativeEngine, compress_process_output_with_budget};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -107,6 +107,30 @@ impl Engine {
             &self
                 .inner
                 .replace_symbol(request)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        )
+    }
+
+    #[pyo3(signature=(path, search, replacement, expected_file_hash=None, validate_syntax=true))]
+    fn replace_block(
+        &self,
+        path: String,
+        search: String,
+        replacement: String,
+        expected_file_hash: Option<String>,
+        validate_syntax: bool,
+    ) -> PyResult<String> {
+        let request = BlockReplaceRequest {
+            path,
+            search,
+            replacement,
+            expected_file_hash,
+            validate_syntax,
+        };
+        json(
+            &self
+                .inner
+                .replace_block(request)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
         )
     }
