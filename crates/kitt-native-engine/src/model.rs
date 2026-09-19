@@ -96,6 +96,24 @@ pub struct EditResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockReplaceRequest {
+    pub path: String,
+    pub search: String,
+    pub replacement: String,
+    pub expected_file_hash: Option<String>,
+    pub validate_syntax: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockReplaceResponse {
+    pub path: String,
+    pub old_file_hash: String,
+    pub new_file_hash: String,
+    pub replacements: usize,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReadResponse {
     pub path: String,
     pub content: String,
