@@ -22,8 +22,9 @@ fn visit_symbols(
 ) {
     let is_symbol = kinds.iter().any(|kind| *kind == node.kind());
     let mut pushed = false;
-    if is_symbol {
-        if let Some(name) = name_of(node, source) {
+    if is_symbol
+        && let Some(name) = name_of(node, source)
+    {
             let qualified = if parents.is_empty() {
                 name.clone()
             } else {
@@ -47,7 +48,6 @@ fn visit_symbols(
             });
             parents.push(name);
             pushed = true;
-        }
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -240,10 +240,10 @@ pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<Strin
             if name == s.name {
                 continue;
             }
-            if let Some(candidates) = by_name.get(name) {
-                if candidates.len() == 1 {
-                    deps.push(candidates[0].id.clone());
-                }
+            if let Some(candidates) = by_name.get(name)
+                && candidates.len() == 1
+            {
+                deps.push(candidates[0].id.clone());
             }
         }
         deps.sort();
