@@ -230,11 +230,8 @@ pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<Strin
         let source = sources
             .get(&s.path)
             .expect("source inserted immediately above");
-        let symbol_source = String::from_utf8_lossy(
-            source
-                .get(s.start_byte..s.end_byte)
-                .unwrap_or_default(),
-        );
+        let symbol_source =
+            String::from_utf8_lossy(source.get(s.start_byte..s.end_byte).unwrap_or_default());
         let mut deps = Vec::new();
         for capture in callish.captures_iter(&symbol_source) {
             let Some(name) = capture.get(1).map(|m| m.as_str()) else {
@@ -257,7 +254,6 @@ pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<Strin
     }
     Ok(graph)
 }
-
 
 #[cfg(test)]
 mod dependency_tests {
