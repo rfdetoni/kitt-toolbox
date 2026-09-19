@@ -29,7 +29,7 @@ fn validate_relative(relative: &str) -> Result<PathBuf> {
     Ok(clean)
 }
 
-fn contained_existing(root: &Path, relative: &str) -> Result<(PathBuf, String)> {
+pub(crate) fn contained_existing(root: &Path, relative: &str) -> Result<(PathBuf, String)> {
     let clean = validate_relative(relative)?;
     let target = root.join(&clean);
     let mut cursor = root.to_path_buf();
