@@ -9,8 +9,8 @@ mod workspace;
 use anyhow::{Result, anyhow};
 use model::{
     BlockReplaceRequest, BlockReplaceResponse, CompressionResponse, EditRequest, EditResponse,
-    FileListResponse, FileReadResponse,
-    SearchOptions, SearchResponse, Symbol, SymbolRead, SymbolReference,
+    FileListResponse, FileReadResponse, SearchOptions, SearchResponse, Symbol, SymbolRead,
+    SymbolReference,
 };
 use std::path::{Path, PathBuf};
 

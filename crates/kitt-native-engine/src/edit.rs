@@ -80,9 +80,8 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
         });
     }
 
-    let mut updated = String::with_capacity(
-        text.len() - request.search.len() + request.replacement.len(),
-    );
+    let mut updated =
+        String::with_capacity(text.len() - request.search.len() + request.replacement.len());
     updated.push_str(&text[..start]);
     updated.push_str(&request.replacement);
     updated.push_str(&text[start + request.search.len()..]);
