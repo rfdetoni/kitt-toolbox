@@ -222,12 +222,21 @@ pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<Strin
     }
     let callish = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|\.)")?;
     let mut graph = HashMap::new();
+    let mut sources: HashMap<String, Vec<u8>> = HashMap::new();
     for s in symbols.iter().take(max_symbols) {
-        let Some(read) = read_symbol(root, &s.id)? else {
-            continue;
-        };
+        if !sources.contains_key(&s.path) {
+            sources.insert(s.path.clone(), fs::read(root.join(&s.path))?);
+        }
+        let source = sources
+            .get(&s.path)
+            .expect("source inserted immediately above");
+        let symbol_source = String::from_utf8_lossy(
+            source
+                .get(s.start_byte..s.end_byte)
+                .unwrap_or_default(),
+        );
         let mut deps = Vec::new();
-        for capture in callish.captures_iter(&read.source) {
+        for capture in callish.captures_iter(&symbol_source) {
             let Some(name) = capture.get(1).map(|m| m.as_str()) else {
                 continue;
             };
@@ -247,4 +256,27 @@ pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<Strin
         }
     }
     Ok(graph)
+}
+
+
+#[cfg(test)]
+mod dependency_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn dependency_edges_use_scanned_symbol_offsets() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("sample.py"),
+            "def helper():\n    return 1\n\ndef caller():\n    return helper()\n",
+        )
+        .unwrap();
+
+        let graph = dependency_edges(dir.path(), 100).unwrap();
+        assert_eq!(
+            graph.get("sample.py::caller"),
+            Some(&vec!["sample.py::helper".to_string()])
+        );
+    }
 }

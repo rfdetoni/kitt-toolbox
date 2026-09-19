@@ -160,7 +160,7 @@ pub fn read_file(
         total_lines,
         omitted_lines: total_lines.saturating_sub(returned_end),
         next_start_line,
-        estimated_tokens: estimated_tokens(&selected.join("\n")),
+        estimated_tokens: estimated_tokens(&content),
         file_size: metadata.len(),
         mtime_ns: mtime_ns(&metadata),
     })
