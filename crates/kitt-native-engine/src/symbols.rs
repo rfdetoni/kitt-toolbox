@@ -22,9 +22,7 @@ fn visit_symbols(
 ) {
     let is_symbol = kinds.iter().any(|kind| *kind == node.kind());
     let mut pushed = false;
-    if is_symbol
-        && let Some(name) = name_of(node, source)
-    {
+    if is_symbol && let Some(name) = name_of(node, source) {
         let qualified = if parents.is_empty() {
             name.clone()
         } else {
