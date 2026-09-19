@@ -150,6 +150,7 @@ pub fn read_file(
         None
     };
 
+    let estimated_tokens = estimated_tokens(&content);
     Ok(FileReadResponse {
         path: display,
         content_hash: sha256_bytes(content.as_bytes()),
@@ -160,7 +161,7 @@ pub fn read_file(
         total_lines,
         omitted_lines: total_lines.saturating_sub(returned_end),
         next_start_line,
-        estimated_tokens: estimated_tokens(&content),
+        estimated_tokens,
         file_size: metadata.len(),
         mtime_ns: mtime_ns(&metadata),
     })
