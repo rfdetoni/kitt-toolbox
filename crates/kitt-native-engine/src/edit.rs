@@ -31,10 +31,10 @@ fn validate(path: &Path, source: &[u8]) -> Result<()> {
 pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse> {
     let current =
         read_symbol(root, &request.symbol_id)?.ok_or_else(|| anyhow!("symbol not found"))?;
-    if let Some(expected) = &request.expected_hash {
-        if expected != &current.symbol.source_hash {
-            return Err(anyhow!("optimistic edit conflict: symbol hash changed"));
-        }
+    if let Some(expected) = &request.expected_hash
+        && expected != &current.symbol.source_hash
+    {
+        return Err(anyhow!("optimistic edit conflict: symbol hash changed"));
     }
     let path = root.join(&current.symbol.path);
     let metadata = fs::metadata(&path)?;
