@@ -8,7 +8,8 @@ mod workspace;
 
 use anyhow::{Result, anyhow};
 use model::{
-    CompressionResponse, EditRequest, EditResponse, FileListResponse, FileReadResponse,
+    BlockReplaceRequest, BlockReplaceResponse, CompressionResponse, EditRequest, EditResponse,
+    FileListResponse, FileReadResponse,
     SearchOptions, SearchResponse, Symbol, SymbolRead, SymbolReference,
 };
 use std::path::{Path, PathBuf};
@@ -55,6 +56,10 @@ impl NativeEngine {
 
     pub fn replace_symbol(&self, request: EditRequest) -> Result<EditResponse> {
         edit::replace_symbol(&self.root, request)
+    }
+
+    pub fn replace_block(&self, request: BlockReplaceRequest) -> Result<BlockReplaceResponse> {
+        edit::replace_block(&self.root, request)
     }
 
     pub fn read_file(
