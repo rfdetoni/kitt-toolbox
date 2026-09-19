@@ -61,7 +61,7 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
     }
     let text = std::str::from_utf8(&original)
         .map_err(|_| anyhow!("block replacement requires a UTF-8 text file"))?;
-    let matches = text.match_indices(&request.search).count();
+    let matches = text.match_indices(request.search.as_str()).count();
     if matches == 0 {
         return Err(anyhow!("search block was not found"));
     }
@@ -80,7 +80,7 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
         });
     }
 
-    let updated = text.replacen(&request.search, &request.replacement, 1);
+    let updated = text.replacen(request.search.as_str(), request.replacement.as_str(), 1);
     let updated_bytes = updated.as_bytes();
     if request.validate_syntax {
         validate(&path, updated_bytes)?;
