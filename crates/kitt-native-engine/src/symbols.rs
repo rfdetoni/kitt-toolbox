@@ -25,29 +25,29 @@ fn visit_symbols(
     if is_symbol
         && let Some(name) = name_of(node, source)
     {
-            let qualified = if parents.is_empty() {
-                name.clone()
-            } else {
-                format!("{}::{}", parents.join("::"), name)
-            };
-            let start = node.start_position().row + 1;
-            let end = node.end_position().row + 1;
-            let slice = source.get(node.byte_range()).unwrap_or_default();
-            let id = format!("{}::{}", path, qualified);
-            out.push(Symbol {
-                id,
-                path: path.to_string(),
-                name: name.clone(),
-                qualified_name: qualified,
-                kind: kind_label(node.kind()),
-                start_line: start,
-                end_line: end,
-                start_byte: node.start_byte(),
-                end_byte: node.end_byte(),
-                source_hash: hash_bytes(slice),
-            });
-            parents.push(name);
-            pushed = true;
+        let qualified = if parents.is_empty() {
+            name.clone()
+        } else {
+            format!("{}::{}", parents.join("::"), name)
+        };
+        let start = node.start_position().row + 1;
+        let end = node.end_position().row + 1;
+        let slice = source.get(node.byte_range()).unwrap_or_default();
+        let id = format!("{}::{}", path, qualified);
+        out.push(Symbol {
+            id,
+            path: path.to_string(),
+            name: name.clone(),
+            qualified_name: qualified,
+            kind: kind_label(node.kind()),
+            start_line: start,
+            end_line: end,
+            start_byte: node.start_byte(),
+            end_byte: node.end_byte(),
+            source_hash: hash_bytes(slice),
+        });
+        parents.push(name);
+        pushed = true;
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
