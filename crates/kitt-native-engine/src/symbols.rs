@@ -87,12 +87,6 @@ fn parse_symbols(path: &Path, relative: &str, source: &[u8]) -> Result<Vec<Symbo
     Ok(out)
 }
 
-pub fn symbols_in_file(root: &Path, relative: &str) -> Result<Vec<Symbol>> {
-    let path = root.join(relative);
-    let source = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    parse_symbols(&path, relative, &source)
-}
-
 #[derive(Debug, Clone)]
 struct CachedSymbols {
     mtime_ns: u128,
@@ -363,25 +357,12 @@ fn containing_symbol(symbols: &[Symbol], line: usize) -> Option<&Symbol> {
         .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.start_line))
 }
 
-pub fn scan_symbols(root: &Path, max_files: usize) -> Result<Vec<Symbol>> {
-    let mut index = SymbolIndex::default();
-    index.refresh(root, max_files)?;
-    Ok(index.all_symbols())
-}
-
-pub fn find_symbols(root: &Path, query: &str, limit: usize) -> Result<Vec<Symbol>> {
-    SymbolIndex::default().find_symbols(root, query, limit)
-}
-
 pub fn read_symbol(root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
     SymbolIndex::default().read_symbol(root, symbol_id)
 }
 
-pub fn find_references(root: &Path, target: &str, limit: usize) -> Result<Vec<SymbolReference>> {
-    SymbolIndex::default().find_references(root, target, limit)
-}
-
-pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<String, Vec<String>>> {
+#[cfg(test)]
+fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<String, Vec<String>>> {
     SymbolIndex::default().dependency_edges(root, max_symbols)
 }
 
