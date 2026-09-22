@@ -13,9 +13,11 @@ use model::{
     SymbolReference,
 };
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 pub struct NativeEngine {
     root: PathBuf,
+    symbol_index: Mutex<symbols::SymbolIndex>,
 }
 
 impl NativeEngine {
@@ -24,7 +26,10 @@ impl NativeEngine {
             .as_ref()
             .canonicalize()
             .map_err(|e| anyhow!("invalid repository root: {e}"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            symbol_index: Mutex::new(symbols::SymbolIndex::default()),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -35,31 +40,51 @@ impl NativeEngine {
         search::search(&self.root, query, options)
     }
 
+    fn symbol_index(&self) -> Result<MutexGuard<'_, symbols::SymbolIndex>> {
+        self.symbol_index
+            .lock()
+            .map_err(|_| anyhow!("native symbol index lock poisoned"))
+    }
+
     pub fn find_symbols(&self, query: &str, limit: usize) -> Result<Vec<Symbol>> {
-        symbols::find_symbols(&self.root, query, limit)
+        self.symbol_index()?.find_symbols(&self.root, query, limit)
     }
 
     pub fn read_symbol(&self, id: &str) -> Result<Option<SymbolRead>> {
-        symbols::read_symbol(&self.root, id)
+        self.symbol_index()?.read_symbol(&self.root, id)
     }
 
     pub fn references(&self, id_or_name: &str, limit: usize) -> Result<Vec<SymbolReference>> {
-        symbols::find_references(&self.root, id_or_name, limit)
+        self.symbol_index()?
+            .find_references(&self.root, id_or_name, limit)
     }
 
     pub fn dependency_edges(
         &self,
         max_symbols: usize,
     ) -> Result<std::collections::HashMap<String, Vec<String>>> {
-        symbols::dependency_edges(&self.root, max_symbols)
+        self.symbol_index()?
+            .dependency_edges(&self.root, max_symbols)
     }
 
     pub fn replace_symbol(&self, request: EditRequest) -> Result<EditResponse> {
-        edit::replace_symbol(&self.root, request)
+        let response = edit::replace_symbol(&self.root, request)?;
+        if response.changed
+            && let Ok(mut index) = self.symbol_index.lock()
+        {
+            index.invalidate(&response.path);
+        }
+        Ok(response)
     }
 
     pub fn replace_block(&self, request: BlockReplaceRequest) -> Result<BlockReplaceResponse> {
-        edit::replace_block(&self.root, request)
+        let response = edit::replace_block(&self.root, request)?;
+        if response.changed
+            && let Ok(mut index) = self.symbol_index.lock()
+        {
+            index.invalidate(&response.path);
+        }
+        Ok(response)
     }
 
     pub fn read_file(
