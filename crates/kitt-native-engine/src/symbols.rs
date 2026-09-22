@@ -3,13 +3,23 @@ use crate::model::{Symbol, SymbolRead, SymbolReference};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tree_sitter::{Node, Parser};
 
 fn hash_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn mtime_ns(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or(0)
 }
 
 fn visit_symbols(
@@ -56,21 +66,19 @@ fn visit_symbols(
     }
 }
 
-pub fn symbols_in_file(root: &Path, relative: &str) -> Result<Vec<Symbol>> {
-    let path = root.join(relative);
-    let Some(lang_id) = identify(&path) else {
+fn parse_symbols(path: &Path, relative: &str, source: &[u8]) -> Result<Vec<Symbol>> {
+    let Some(lang_id) = identify(path) else {
         return Ok(Vec::new());
     };
-    let source = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let mut parser = Parser::new();
     parser.set_language(&grammar(lang_id)?)?;
     let tree = parser
-        .parse(&source, None)
+        .parse(source, None)
         .context("parser returned no tree")?;
     let mut out = Vec::new();
     visit_symbols(
         tree.root_node(),
-        &source,
+        source,
         &relative.replace('\\', "/"),
         symbol_kinds(lang_id),
         &mut Vec::new(),
@@ -79,178 +87,303 @@ pub fn symbols_in_file(root: &Path, relative: &str) -> Result<Vec<Symbol>> {
     Ok(out)
 }
 
-pub fn scan_symbols(root: &Path, max_files: usize) -> Result<Vec<Symbol>> {
-    let mut out = Vec::new();
-    let mut count = 0usize;
-    for entry in WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .build()
-        .filter_map(Result::ok)
-    {
-        if count >= max_files {
-            break;
-        }
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.path();
-        if identify(path).is_none() {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if let Ok(mut syms) = symbols_in_file(root, &rel) {
-            out.append(&mut syms);
-        }
-        count += 1;
+pub fn symbols_in_file(root: &Path, relative: &str) -> Result<Vec<Symbol>> {
+    let path = root.join(relative);
+    let source = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    parse_symbols(&path, relative, &source)
+}
+
+#[derive(Debug, Clone)]
+struct CachedSymbols {
+    mtime_ns: u128,
+    size: u64,
+    symbols: Vec<Symbol>,
+}
+
+#[derive(Default)]
+pub struct SymbolIndex {
+    files: HashMap<String, CachedSymbols>,
+}
+
+impl SymbolIndex {
+    pub fn invalidate(&mut self, relative: &str) {
+        self.files.remove(&relative.replace('\\', "/"));
     }
-    Ok(out)
-}
 
-pub fn find_symbols(root: &Path, query: &str, limit: usize) -> Result<Vec<Symbol>> {
-    let q = query.to_ascii_lowercase();
-    let mut syms = scan_symbols(root, 100_000)?;
-    syms.retain(|s| {
-        s.name.to_ascii_lowercase().contains(&q)
-            || s.qualified_name.to_ascii_lowercase().contains(&q)
-            || s.id.to_ascii_lowercase().contains(&q)
-    });
-    syms.sort_by_key(|s| {
-        let exact =
-            s.name.eq_ignore_ascii_case(query) || s.qualified_name.eq_ignore_ascii_case(query);
-        (!exact, s.qualified_name.len(), s.path.clone())
-    });
-    syms.truncate(limit.clamp(1, 500));
-    Ok(syms)
-}
-
-pub fn read_symbol(root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
-    let path = symbol_id.split("::").next().unwrap_or("");
-    if path.is_empty() {
-        return Ok(None);
-    }
-    let source = fs::read(root.join(path))?;
-    let symbols = symbols_in_file(root, path)?;
-    let Some(symbol) = symbols.into_iter().find(|s| s.id == symbol_id) else {
-        return Ok(None);
-    };
-    let text = String::from_utf8_lossy(
-        source
-            .get(symbol.start_byte..symbol.end_byte)
-            .unwrap_or_default(),
-    )
-    .to_string();
-    Ok(Some(SymbolRead {
-        symbol,
-        source: text,
-    }))
-}
-
-fn containing_symbol(symbols: &[Symbol], line: usize) -> Option<&Symbol> {
-    symbols
-        .iter()
-        .filter(|s| s.start_line <= line && line <= s.end_line)
-        .min_by_key(|s| s.end_line.saturating_sub(s.start_line))
-}
-
-pub fn find_references(root: &Path, target: &str, limit: usize) -> Result<Vec<SymbolReference>> {
-    let target_name = target.rsplit("::").next().unwrap_or(target);
-    let word = regex::Regex::new(&format!(r"\b{}\b", regex::escape(target_name)))?;
-    let mut out = Vec::new();
-    for entry in WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .build()
-        .filter_map(Result::ok)
-    {
-        if out.len() >= limit {
-            break;
+    fn refresh_path(&mut self, root: &Path, relative: &str) -> Result<()> {
+        let normalized = relative.replace('\\', "/");
+        let path = root.join(&normalized);
+        if identify(&path).is_none() {
+            self.files.remove(&normalized);
+            return Ok(());
         }
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.path();
-        if identify(path).is_none() {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let text = match fs::read_to_string(path) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let metadata = match fs::metadata(&path) {
+            Ok(value) if value.is_file() => value,
+            _ => {
+                self.files.remove(&normalized);
+                return Ok(());
+            }
         };
-        let syms = symbols_in_file(root, &rel).unwrap_or_default();
-        for (idx, line) in text.lines().enumerate() {
+        let stamp = mtime_ns(&metadata);
+        let size = metadata.len();
+        if self
+            .files
+            .get(&normalized)
+            .is_some_and(|cached| cached.mtime_ns == stamp && cached.size == size)
+        {
+            return Ok(());
+        }
+
+        let source = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let symbols = parse_symbols(&path, &normalized, &source)?;
+        self.files.insert(
+            normalized,
+            CachedSymbols {
+                mtime_ns: stamp,
+                size,
+                symbols,
+            },
+        );
+        Ok(())
+    }
+
+    fn refresh(&mut self, root: &Path, max_files: usize) -> Result<()> {
+        let max_files = max_files.max(1);
+        let mut seen = HashSet::new();
+        let mut count = 0usize;
+        let mut complete = true;
+
+        for entry in WalkBuilder::new(root)
+            .hidden(true)
+            .git_ignore(true)
+            .build()
+            .filter_map(Result::ok)
+        {
+            if !entry.file_type().map(|value| value.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let path = entry.path();
+            if identify(path).is_none() {
+                continue;
+            }
+            if count >= max_files {
+                complete = false;
+                break;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            seen.insert(relative.clone());
+            self.refresh_path(root, &relative)?;
+            count += 1;
+        }
+
+        if complete {
+            self.files.retain(|path, _| seen.contains(path));
+        }
+        Ok(())
+    }
+
+    fn all_symbols(&self) -> Vec<Symbol> {
+        let mut symbols = self
+            .files
+            .values()
+            .flat_map(|entry| entry.symbols.iter().cloned())
+            .collect::<Vec<_>>();
+        symbols.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.start_line.cmp(&right.start_line))
+                .then(left.qualified_name.cmp(&right.qualified_name))
+        });
+        symbols
+    }
+
+    pub fn find_symbols(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Symbol>> {
+        self.refresh(root, 100_000)?;
+        let q = query.to_ascii_lowercase();
+        let mut symbols = self.all_symbols();
+        symbols.retain(|symbol| {
+            symbol.name.to_ascii_lowercase().contains(&q)
+                || symbol.qualified_name.to_ascii_lowercase().contains(&q)
+                || symbol.id.to_ascii_lowercase().contains(&q)
+        });
+        symbols.sort_by_key(|symbol| {
+            let exact = symbol.name.eq_ignore_ascii_case(query)
+                || symbol.qualified_name.eq_ignore_ascii_case(query);
+            (!exact, symbol.qualified_name.len(), symbol.path.clone())
+        });
+        symbols.truncate(limit.clamp(1, 500));
+        Ok(symbols)
+    }
+
+    pub fn read_symbol(&mut self, root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
+        let relative = symbol_id.split("::").next().unwrap_or("");
+        if relative.is_empty() {
+            return Ok(None);
+        }
+        self.refresh_path(root, relative)?;
+        let Some(symbol) = self
+            .files
+            .get(relative)
+            .and_then(|entry| entry.symbols.iter().find(|symbol| symbol.id == symbol_id))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let source = fs::read(root.join(relative))?;
+        let text = String::from_utf8_lossy(
+            source
+                .get(symbol.start_byte..symbol.end_byte)
+                .unwrap_or_default(),
+        )
+        .to_string();
+        Ok(Some(SymbolRead {
+            symbol,
+            source: text,
+        }))
+    }
+
+    pub fn find_references(
+        &mut self,
+        root: &Path,
+        target: &str,
+        limit: usize,
+    ) -> Result<Vec<SymbolReference>> {
+        self.refresh(root, 100_000)?;
+        let target_name = target.rsplit("::").next().unwrap_or(target);
+        let word = regex::Regex::new(&format!(r"\b{}\b", regex::escape(target_name)))?;
+        let mut paths = self.files.keys().cloned().collect::<Vec<_>>();
+        paths.sort();
+
+        let mut out = Vec::new();
+        for relative in paths {
             if out.len() >= limit {
                 break;
             }
-            if word.is_match(line) {
+            let bytes = match fs::read(root.join(&relative)) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            let symbols = self
+                .files
+                .get(&relative)
+                .map(|entry| entry.symbols.as_slice())
+                .unwrap_or_default();
+            for (idx, line) in text.lines().enumerate() {
+                if out.len() >= limit {
+                    break;
+                }
+                if !word.is_match(line) {
+                    continue;
+                }
                 let line_no = idx + 1;
-                if syms
+                if symbols
                     .iter()
-                    .any(|s| s.name == target_name && s.start_line == line_no)
+                    .any(|symbol| symbol.name == target_name && symbol.start_line == line_no)
                 {
                     continue;
                 }
                 out.push(SymbolReference {
-                    path: rel.clone(),
+                    path: relative.clone(),
                     line: line_no,
-                    containing_symbol: containing_symbol(&syms, line_no).map(|s| s.id.clone()),
+                    containing_symbol: containing_symbol(symbols, line_no)
+                        .map(|symbol| symbol.id.clone()),
                     target_name: target_name.to_string(),
                     kind: "lexical_ast_reference".to_string(),
                 });
             }
         }
+        Ok(out)
     }
-    Ok(out)
+
+    pub fn dependency_edges(
+        &mut self,
+        root: &Path,
+        max_symbols: usize,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        self.refresh(root, 100_000)?;
+        let symbols = self.all_symbols();
+        let mut by_name: HashMap<String, Vec<&Symbol>> = HashMap::new();
+        for symbol in &symbols {
+            by_name.entry(symbol.name.clone()).or_default().push(symbol);
+        }
+
+        let callish = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|\.)")?;
+        let mut graph = HashMap::new();
+        let mut sources: HashMap<String, Vec<u8>> = HashMap::new();
+
+        for symbol in symbols.iter().take(max_symbols) {
+            if !sources.contains_key(&symbol.path) {
+                sources.insert(symbol.path.clone(), fs::read(root.join(&symbol.path))?);
+            }
+            let source = sources
+                .get(&symbol.path)
+                .expect("source inserted immediately above");
+            let symbol_source = String::from_utf8_lossy(
+                source
+                    .get(symbol.start_byte..symbol.end_byte)
+                    .unwrap_or_default(),
+            );
+            let mut dependencies = Vec::new();
+            for capture in callish.captures_iter(&symbol_source) {
+                let Some(name) = capture.get(1).map(|value| value.as_str()) else {
+                    continue;
+                };
+                if name == symbol.name {
+                    continue;
+                }
+                if let Some(candidates) = by_name.get(name)
+                    && candidates.len() == 1
+                {
+                    dependencies.push(candidates[0].id.clone());
+                }
+            }
+            dependencies.sort();
+            dependencies.dedup();
+            if !dependencies.is_empty() {
+                graph.insert(symbol.id.clone(), dependencies);
+            }
+        }
+        Ok(graph)
+    }
+}
+
+fn containing_symbol(symbols: &[Symbol], line: usize) -> Option<&Symbol> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol.start_line <= line && line <= symbol.end_line)
+        .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.start_line))
+}
+
+pub fn scan_symbols(root: &Path, max_files: usize) -> Result<Vec<Symbol>> {
+    let mut index = SymbolIndex::default();
+    index.refresh(root, max_files)?;
+    Ok(index.all_symbols())
+}
+
+pub fn find_symbols(root: &Path, query: &str, limit: usize) -> Result<Vec<Symbol>> {
+    SymbolIndex::default().find_symbols(root, query, limit)
+}
+
+pub fn read_symbol(root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
+    SymbolIndex::default().read_symbol(root, symbol_id)
+}
+
+pub fn find_references(root: &Path, target: &str, limit: usize) -> Result<Vec<SymbolReference>> {
+    SymbolIndex::default().find_references(root, target, limit)
 }
 
 pub fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<String, Vec<String>>> {
-    let symbols = scan_symbols(root, 100_000)?;
-    let mut by_name: HashMap<String, Vec<&Symbol>> = HashMap::new();
-    for s in &symbols {
-        by_name.entry(s.name.clone()).or_default().push(s);
-    }
-    let callish = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|\.)")?;
-    let mut graph = HashMap::new();
-    let mut sources: HashMap<String, Vec<u8>> = HashMap::new();
-    for s in symbols.iter().take(max_symbols) {
-        if !sources.contains_key(&s.path) {
-            sources.insert(s.path.clone(), fs::read(root.join(&s.path))?);
-        }
-        let source = sources
-            .get(&s.path)
-            .expect("source inserted immediately above");
-        let symbol_source =
-            String::from_utf8_lossy(source.get(s.start_byte..s.end_byte).unwrap_or_default());
-        let mut deps = Vec::new();
-        for capture in callish.captures_iter(&symbol_source) {
-            let Some(name) = capture.get(1).map(|m| m.as_str()) else {
-                continue;
-            };
-            if name == s.name {
-                continue;
-            }
-            if let Some(candidates) = by_name.get(name)
-                && candidates.len() == 1
-            {
-                deps.push(candidates[0].id.clone());
-            }
-        }
-        deps.sort();
-        deps.dedup();
-        if !deps.is_empty() {
-            graph.insert(s.id.clone(), deps);
-        }
-    }
-    Ok(graph)
+    SymbolIndex::default().dependency_edges(root, max_symbols)
 }
 
 #[cfg(test)]
@@ -272,5 +405,25 @@ mod dependency_tests {
             graph.get("sample.py::caller"),
             Some(&vec!["sample.py::helper".to_string()])
         );
+    }
+
+    #[test]
+    fn symbol_index_reuses_unchanged_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("sample.py"), "def first():\n    return 1\n").unwrap();
+        let mut index = SymbolIndex::default();
+        let first = index.find_symbols(dir.path(), "first", 10).unwrap();
+        assert_eq!(first.len(), 1);
+
+        let second = index.find_symbols(dir.path(), "first", 10).unwrap();
+        assert_eq!(second, first);
+
+        fs::write(
+            dir.path().join("sample.py"),
+            "def second_name():\n    return 2\n",
+        )
+        .unwrap();
+        let updated = index.find_symbols(dir.path(), "second_name", 10).unwrap();
+        assert_eq!(updated.len(), 1);
     }
 }
