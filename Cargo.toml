@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -29,3 +29,4 @@ tree-sitter-rust = "0.24"
 tree-sitter-go = "0.23"
 pretty_assertions = "1"
 pyo3 = { version = "0.23", features = ["extension-module", "abi3"] }
+pythonize = "0.23"
