@@ -159,7 +159,11 @@ impl SymbolIndex {
             .build()
             .filter_map(Result::ok)
         {
-            if !entry.file_type().map(|value| value.is_file()).unwrap_or(false) {
+            if !entry
+                .file_type()
+                .map(|value| value.is_file())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let path = entry.path();
@@ -201,12 +205,7 @@ impl SymbolIndex {
         symbols
     }
 
-    pub fn find_symbols(
-        &mut self,
-        root: &Path,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<Symbol>> {
+    pub fn find_symbols(&mut self, root: &Path, query: &str, limit: usize) -> Result<Vec<Symbol>> {
         self.refresh(root, 100_000)?;
         let q = query.to_ascii_lowercase();
         let mut symbols = self.all_symbols();
