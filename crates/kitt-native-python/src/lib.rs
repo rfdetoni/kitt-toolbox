@@ -68,11 +68,7 @@ impl Engine {
         to_py(py, &value)
     }
 
-    fn read_symbol<'py>(
-        &self,
-        py: Python<'py>,
-        symbol_id: String,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn read_symbol<'py>(&self, py: Python<'py>, symbol_id: String) -> PyResult<Bound<'py, PyAny>> {
         let value = py
             .allow_threads(|| self.inner.read_symbol(&symbol_id))
             .map_err(runtime_error)?;
