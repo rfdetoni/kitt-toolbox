@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/rfdetoni/kitt-toolbox/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Rust 1.85+" src="https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white">
+  <img alt="Rust 1.90+" src="https://img.shields.io/badge/Rust-1.90%2B-000000?logo=rust&logoColor=white">
   <img alt="Python native" src="https://img.shields.io/badge/Python-PyO3-3776AB?logo=python&logoColor=white">
 </p>
 
@@ -43,7 +43,7 @@ The Agent does not depend on native code semantically: when the `kitt_native` ex
 
 ## Requirements & compatibility
 
-- Rust **1.85+** / edition 2024.
+- Rust **1.90+** / edition 2024.
 - Python is only required when building the PyO3 wheel.
 - `maturin` is used by the native-wheel release helper.
 
