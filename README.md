@@ -47,7 +47,7 @@ The Agent does not depend on native code semantically: when the `kitt_native` ex
 - Python is only required when building the PyO3 wheel.
 - `maturin` is used by the native-wheel release helper.
 
-The Python extension uses PyO3’s stable ABI (`abi3`) so the native backend can remain compatible across supported CPython versions without building a separate wheel for every interpreter minor version.
+The Python extension uses PyO3’s stable ABI (`abi3`) so the native backend can remain compatible across supported CPython versions without building a separate wheel for every interpreter minor version. Toolbox 0.2.9 explicitly enables PyO3 ABI3 forward compatibility so the existing PyO3 0.23 bridge can build against CPython 3.14 while keeping the stable ABI boundary.
 
 ---
 
