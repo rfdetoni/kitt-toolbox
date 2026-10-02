@@ -105,6 +105,26 @@ impl NativeEngine {
         )
     }
 
+    pub fn read_file_from_byte(
+        &self,
+        path: &str,
+        start_line: usize,
+        end_line: Option<usize>,
+        max_bytes: usize,
+        token_budget: usize,
+        start_byte: Option<usize>,
+    ) -> Result<FileReadResponse> {
+        workspace::read_file_from_byte(
+            &self.root,
+            path,
+            start_line,
+            end_line,
+            max_bytes,
+            token_budget,
+            start_byte,
+        )
+    }
+
     pub fn list_files(
         &self,
         path: &str,

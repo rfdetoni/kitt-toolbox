@@ -1,14 +1,18 @@
 use crate::language::{grammar, identify};
 use crate::model::{BlockReplaceRequest, BlockReplaceResponse, EditRequest, EditResponse};
+#[cfg(test)]
 use crate::symbols::read_symbol;
+use crate::symbols::read_symbol_snapshot;
 use crate::workspace::contained_existing;
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 use tempfile::NamedTempFile;
 use tree_sitter::Parser;
+static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
 fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -29,13 +33,25 @@ fn validate(path: &Path, source: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn persist_atomic(path: &Path, metadata: &fs::Metadata, bytes: &[u8]) -> Result<()> {
+fn persist_atomic(
+    path: &Path,
+    metadata: &fs::Metadata,
+    bytes: &[u8],
+    expected_hash: &str,
+) -> Result<()> {
     let parent = path.parent().ok_or_else(|| anyhow!("file has no parent"))?;
     let mut temp = NamedTempFile::new_in(parent)?;
     temp.write_all(bytes)?;
     temp.flush()?;
     temp.as_file().sync_all()?;
     temp.as_file().set_permissions(metadata.permissions())?;
+    if fs::symlink_metadata(path)?.file_type().is_symlink()
+        || hash(&fs::read(path)?) != expected_hash
+    {
+        return Err(anyhow!(
+            "optimistic edit conflict: file changed before persistence"
+        ));
+    }
     temp.persist(path)
         .map_err(|e| e.error)
         .with_context(|| format!("persist {}", path.display()))?;
@@ -43,6 +59,9 @@ fn persist_atomic(path: &Path, metadata: &fs::Metadata, bytes: &[u8]) -> Result<
 }
 
 pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockReplaceResponse> {
+    let _guard = EDIT_LOCK
+        .lock()
+        .map_err(|_| anyhow!("edit lock poisoned"))?;
     if request.search.is_empty() {
         return Err(anyhow!("search block must not be empty"));
     }
@@ -89,7 +108,7 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
     if request.validate_syntax {
         validate(&path, updated_bytes)?;
     }
-    persist_atomic(&path, &metadata, updated_bytes)?;
+    persist_atomic(&path, &metadata, updated_bytes, &old_file_hash)?;
     Ok(BlockReplaceResponse {
         path: display,
         old_file_hash,
@@ -100,8 +119,10 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
 }
 
 pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse> {
-    let current =
-        read_symbol(root, &request.symbol_id)?.ok_or_else(|| anyhow!("symbol not found"))?;
+    let _guard = EDIT_LOCK
+        .lock()
+        .map_err(|_| anyhow!("edit lock poisoned"))?;
+    let (current, mut bytes) = read_symbol_snapshot(root, &request.symbol_id)?;
     if let Some(expected) = &request.expected_hash
         && expected != &current.symbol.source_hash
     {
@@ -109,7 +130,7 @@ pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse>
     }
     let path = root.join(&current.symbol.path);
     let metadata = fs::metadata(&path)?;
-    let mut bytes = fs::read(&path)?;
+    let original_file_hash = hash(&bytes);
     let old_hash = current.symbol.source_hash.clone();
     if current.source == request.replacement {
         return Ok(EditResponse {
@@ -126,7 +147,7 @@ pub fn replace_symbol(root: &Path, request: EditRequest) -> Result<EditResponse>
     if request.validate_syntax {
         validate(&path, &bytes)?;
     }
-    persist_atomic(&path, &metadata, &bytes)?;
+    persist_atomic(&path, &metadata, &bytes, &original_file_hash)?;
 
     // Do not re-resolve the old symbol id after persistence: a valid structural
     // edit may intentionally rename or remove the symbol.  The edit is already
@@ -145,6 +166,18 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn persistence_rejects_a_changed_snapshot_without_overwriting_it() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        fs::write(&file, "original").unwrap();
+        let original_hash = hash(b"original");
+        let metadata = fs::metadata(&file).unwrap();
+        fs::write(&file, "concurrent writer").unwrap();
+        assert!(persist_atomic(&file, &metadata, b"replacement", &original_hash).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "concurrent writer");
+    }
 
     #[test]
     fn block_replace_requires_unique_exact_context() {

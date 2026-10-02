@@ -357,6 +357,27 @@ fn containing_symbol(symbols: &[Symbol], line: usize) -> Option<&Symbol> {
         .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.start_line))
 }
 
+pub(crate) fn read_symbol_snapshot(root: &Path, symbol_id: &str) -> Result<(SymbolRead, Vec<u8>)> {
+    let relative = symbol_id.split("::").next().unwrap_or("");
+    let (path, display) = crate::workspace::contained_existing(root, relative)?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(&path)?
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 4 * 1024 * 1024,
+        "symbol file exceeds read limit"
+    );
+    let symbol = parse_symbols(&path, &display, &bytes)?
+        .into_iter()
+        .find(|symbol| symbol.id == symbol_id)
+        .context("symbol not found")?;
+    let source = std::str::from_utf8(&bytes[symbol.start_byte..symbol.end_byte])?.to_string();
+    Ok((SymbolRead { symbol, source }, bytes))
+}
+
+#[cfg(test)]
 pub fn read_symbol(root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
     SymbolIndex::default().read_symbol(root, symbol_id)
 }

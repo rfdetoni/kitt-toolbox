@@ -46,3 +46,16 @@ O wheel usa ABI estável do PyO3 e é descoberto automaticamente pelo `kitt-agen
 O Toolbox não decide autorização, autonomia ou política de ferramentas. Ele fornece operações determinísticas e limitadas; a autoridade permanece no control plane do `kitt-agent-cli`.
 
 Também não depende de `kitt-protocol`: adaptação de IPC/transporte pertence ao processo hospedeiro.
+
+## Exact pagination and edit conflicts (0.3.0)
+
+`read_file(..., start_byte=None)` returns `next_start_byte`, `start_byte`,
+`partial_line_truncated` and `truncated`. Follow the byte cursor for long lines;
+`next_start_line` alone cannot recover a partial line. Original UTF-8 bytes,
+CRLF/LF and final newlines are preserved. Non-UTF-8 text and cursors inside a
+character are rejected. Compare `full_file_hash` between pages and restart on change.
+
+Symbol edits parse and splice one bounded snapshot. Native edits in a process are
+serialized and file hashes are checked immediately before atomic replacement.
+An external editor that ignores KITT's synchronization can still race the final
+check and rename; callers must handle explicit optimistic conflicts and re-read.

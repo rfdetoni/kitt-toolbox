@@ -83,86 +83,110 @@ pub fn read_file(
     max_bytes: usize,
     token_budget: usize,
 ) -> Result<FileReadResponse> {
+    read_file_from_byte(
+        root,
+        relative,
+        start_line,
+        end_line,
+        max_bytes,
+        token_budget,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn read_file_from_byte(
+    root: &Path,
+    relative: &str,
+    start_line: usize,
+    end_line: Option<usize>,
+    max_bytes: usize,
+    token_budget: usize,
+    start_byte: Option<usize>,
+) -> Result<FileReadResponse> {
     let (path, display) = contained_existing(root, relative)?;
     let metadata = fs::metadata(&path)?;
     if !metadata.is_file() {
         return Err(anyhow!("path is not a regular file"));
     }
-
     if metadata.len() > DEFAULT_MAX_FILE_BYTES as u64 {
+        return Err(anyhow!("file exceeds read limit"));
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(&path)?
+        .take(DEFAULT_MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > DEFAULT_MAX_FILE_BYTES {
+        return Err(anyhow!("file exceeds read limit"));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!("read_file requires UTF-8 text"))?;
+    let mut starts = vec![0];
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' && offset + 1 < bytes.len() {
+            starts.push(offset + 1);
+        }
+    }
+    let total_lines = if bytes.is_empty() { 0 } else { starts.len() };
+    let start =
+        start_byte.unwrap_or_else(|| *starts.get(start_line.max(1) - 1).unwrap_or(&bytes.len()));
+    if start > bytes.len() || !text.is_char_boundary(start) {
         return Err(anyhow!(
-            "file exceeds read limit: {} > {} bytes",
-            metadata.len(),
-            DEFAULT_MAX_FILE_BYTES
+            "start_byte must be a UTF-8 byte boundary within the file"
         ));
     }
-
-    let bytes = fs::read(&path)?;
-    let full_file_hash = sha256_bytes(&bytes);
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    let total_lines = lines.len();
-
-    let start = start_line.max(1).saturating_sub(1).min(total_lines);
-    let requested_end = end_line
-        .unwrap_or(start.saturating_add(200))
-        .max(start)
-        .min(start.saturating_add(5000))
-        .min(total_lines);
-
-    let token_budget = token_budget.clamp(64, 32_000);
-    let char_budget = token_budget.saturating_mul(4);
-    let mut selected = Vec::new();
-    let mut chars = 0usize;
-    let mut cursor = start;
-
-    while cursor < requested_end {
-        let line = lines[cursor];
-        let extra = line.chars().count() + usize::from(!selected.is_empty());
-        if !selected.is_empty() && chars.saturating_add(extra) > char_budget {
-            break;
-        }
-        if selected.is_empty() && extra > char_budget {
-            let prefix: String = line.chars().take(char_budget).collect();
-            selected.push(prefix);
-            cursor += 1;
-            break;
-        }
-        selected.push(line.to_string());
-        chars += extra;
-        cursor += 1;
-    }
-
-    let mut content = selected.join("\n");
-    let returned_end = if cursor > start { cursor } else { start };
-    let mut truncated = returned_end < requested_end || requested_end < total_lines;
-    if max_bytes > 0 && content.len() > max_bytes {
-        let mut keep = max_bytes;
-        while keep > 0 && !content.is_char_boundary(keep) {
-            keep -= 1;
-        }
-        content.truncate(keep);
-        truncated = true;
-    }
-    let next_start_line = if truncated {
-        Some(returned_end.saturating_add(1))
+    let first_line = starts.partition_point(|offset| *offset <= start).max(1);
+    let requested_end_line = end_line
+        .unwrap_or(first_line.saturating_add(199))
+        .max(first_line)
+        .min(first_line.saturating_add(4999));
+    let requested_end = *starts.get(requested_end_line).unwrap_or(&bytes.len());
+    let byte_budget = if max_bytes == 0 {
+        DEFAULT_MAX_FILE_BYTES
     } else {
-        None
+        max_bytes.min(DEFAULT_MAX_FILE_BYTES)
     };
-
-    let estimated_tokens = estimated_tokens(&content);
+    let char_budget = token_budget.clamp(64, 32_000).saturating_mul(4);
+    let mut end = start
+        .saturating_add(byte_budget)
+        .min(requested_end)
+        .min(bytes.len());
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if let Some((offset, _)) = text[start..end].char_indices().nth(char_budget) {
+        end = start + offset;
+    }
+    if end == start && start < bytes.len() {
+        return Err(anyhow!("read budget cannot fit the next UTF-8 character"));
+    }
+    let content = text[start..end].to_string();
+    let returned_end = if bytes.is_empty() {
+        0
+    } else {
+        starts
+            .partition_point(|offset| *offset < end)
+            .max(first_line)
+    };
+    let truncated = end < bytes.len();
+    let partial_line_truncated = truncated && end > 0 && bytes[end - 1] != b'\n';
+    let next_start_line = truncated.then(|| starts.partition_point(|offset| *offset <= end).max(1));
     Ok(FileReadResponse {
         path: display,
         content_hash: sha256_bytes(content.as_bytes()),
-        full_file_hash,
+        full_file_hash: sha256_bytes(&bytes),
+        estimated_tokens: estimated_tokens(&content),
         content,
-        start_line: start.saturating_add(1),
+        start_line: first_line,
         end_line: returned_end,
         total_lines,
         omitted_lines: total_lines.saturating_sub(returned_end),
         next_start_line,
-        estimated_tokens,
-        file_size: metadata.len(),
+        start_byte: start,
+        next_start_byte: truncated.then_some(end),
+        truncated,
+        partial_line_truncated,
+        file_size: bytes.len() as u64,
         mtime_ns: mtime_ns(&metadata),
     })
 }
@@ -267,5 +291,32 @@ mod tests {
         assert_eq!(response.files, vec!["a.py", "b.py"]);
         assert_eq!(response.omitted, 1);
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod cursor_regression {
+    use super::*;
+    #[test]
+    fn byte_cursor_round_trips_long_unicode_lines_and_original_newlines() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = format!("{}\r\nlast line\n", "á🦀".repeat(300));
+        fs::write(dir.path().join("long.txt"), &original).unwrap();
+        let mut cursor = None;
+        let mut rebuilt = String::new();
+        loop {
+            let page =
+                read_file_from_byte(dir.path(), "long.txt", 1, None, 129, 64, cursor).unwrap();
+            assert!(page.content.len() <= 129);
+            rebuilt.push_str(&page.content);
+            match page.next_start_byte {
+                Some(next) => {
+                    assert!(next > cursor.unwrap_or(0));
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+        assert_eq!(rebuilt, original);
     }
 }

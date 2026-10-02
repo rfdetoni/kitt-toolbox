@@ -144,7 +144,8 @@ impl Engine {
         to_py(py, &value)
     }
 
-    #[pyo3(signature=(path, start_line=1, end_line=None, max_bytes=4194304, token_budget=1200))]
+    #[pyo3(signature=(path, start_line=1, end_line=None, max_bytes=4194304, token_budget=1200, start_byte=None))]
+    #[allow(clippy::too_many_arguments)]
     fn read_file<'py>(
         &self,
         py: Python<'py>,
@@ -153,11 +154,18 @@ impl Engine {
         end_line: Option<usize>,
         max_bytes: usize,
         token_budget: usize,
+        start_byte: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let value = py
             .allow_threads(|| {
-                self.inner
-                    .read_file(&path, start_line, end_line, max_bytes, token_budget)
+                self.inner.read_file_from_byte(
+                    &path,
+                    start_line,
+                    end_line,
+                    max_bytes,
+                    token_budget,
+                    start_byte,
+                )
             })
             .map_err(runtime_error)?;
         to_py(py, &value)
