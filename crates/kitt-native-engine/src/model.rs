@@ -151,28 +151,3 @@ pub struct CompressionResponse {
     pub raw_sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LeaseMode {
-    Read,
-    Write,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LeaseView {
-    pub resource_id: String,
-    pub owner_id: String,
-    pub mode: LeaseMode,
-    pub intent: String,
-    pub expires_at_ms: u64,
-}
-
-pub fn lease_conflicts(
-    existing: &LeaseView,
-    requested_owner: &str,
-    requested_mode: LeaseMode,
-) -> bool {
-    if existing.owner_id == requested_owner {
-        return false;
-    }
-    matches!(existing.mode, LeaseMode::Write) || matches!(requested_mode, LeaseMode::Write)
-}

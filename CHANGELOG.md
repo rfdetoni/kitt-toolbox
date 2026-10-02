@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 — 2026-10-02
+
+- Remove unused lease-coordination types from the public native model surface; workspace coordination remains Agent-owned.
+
 ## 0.3.0 — 2026-10-02
 
 - Add exact UTF-8 byte pagination with original line endings and explicit partial-line cursors.

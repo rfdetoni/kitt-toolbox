@@ -18,7 +18,7 @@ Sondagem de CPU/RAM/disco não faz parte deste componente. O antigo executável 
 
 ## 2. Requisitos
 
-- Rust 1.85+;
+- Rust 1.90+;
 - Python 3.12+ para construir/testar o wheel;
 - `maturin>=1.8,<2` para empacotamento Python.
 
