@@ -150,4 +150,3 @@ pub struct CompressionResponse {
     pub omitted_lines: usize,
     pub raw_sha256: String,
 }
-
