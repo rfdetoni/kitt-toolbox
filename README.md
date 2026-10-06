@@ -1,5 +1,11 @@
 # K.I.T.T. Toolbox
 
+## Release 0.4.1 — execution boundary hardening
+
+Filter borrowed symbols before cloning; select bounded top-k results before sorting. Keep deterministic exact-match priority and tie ordering, while preserving filesystem refresh and external-edit detection.
+
+See [release notes](docs/RELEASE_0.4.1.md).
+
 <p align="center">
   <strong>Shared native data plane for K.I.T.T.</strong><br>
   Rust code intelligence · bounded repository operations · PyO3 acceleration
