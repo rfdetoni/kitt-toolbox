@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 — 2026-10-06
+
+- Filter borrowed symbols before cloning; select bounded top-k results before sorting. Keep deterministic exact-match priority and tie ordering, while preserving filesystem refresh and external-edit detection.
+
 ## 0.4.0 — 2026-10-02
 
 - Remove unused lease-coordination types from the public native model surface; workspace coordination remains Agent-owned.

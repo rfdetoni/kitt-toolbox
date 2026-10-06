@@ -202,19 +202,35 @@ impl SymbolIndex {
     pub fn find_symbols(&mut self, root: &Path, query: &str, limit: usize) -> Result<Vec<Symbol>> {
         self.refresh(root, 100_000)?;
         let q = query.to_ascii_lowercase();
-        let mut symbols = self.all_symbols();
-        symbols.retain(|symbol| {
-            symbol.name.to_ascii_lowercase().contains(&q)
-                || symbol.qualified_name.to_ascii_lowercase().contains(&q)
-                || symbol.id.to_ascii_lowercase().contains(&q)
-        });
-        symbols.sort_by_key(|symbol| {
-            let exact = symbol.name.eq_ignore_ascii_case(query)
-                || symbol.qualified_name.eq_ignore_ascii_case(query);
-            (!exact, symbol.qualified_name.len(), symbol.path.clone())
-        });
-        symbols.truncate(limit.clamp(1, 500));
-        Ok(symbols)
+        let mut symbols = self
+            .files
+            .values()
+            .flat_map(|entry| entry.symbols.iter())
+            .filter(|symbol| {
+                symbol.name.to_ascii_lowercase().contains(&q)
+                    || symbol.qualified_name.to_ascii_lowercase().contains(&q)
+                    || symbol.id.to_ascii_lowercase().contains(&q)
+            })
+            .collect::<Vec<_>>();
+        let compare = |left: &&Symbol, right: &&Symbol| {
+            let exact = |symbol: &Symbol| {
+                symbol.name.eq_ignore_ascii_case(query)
+                    || symbol.qualified_name.eq_ignore_ascii_case(query)
+            };
+            (!exact(left))
+                .cmp(&!exact(right))
+                .then(left.qualified_name.len().cmp(&right.qualified_name.len()))
+                .then(left.path.cmp(&right.path))
+                .then(left.start_line.cmp(&right.start_line))
+                .then(left.qualified_name.cmp(&right.qualified_name))
+        };
+        let bounded = limit.clamp(1, 500);
+        if symbols.len() > bounded {
+            symbols.select_nth_unstable_by(bounded, compare);
+            symbols.truncate(bounded);
+        }
+        symbols.sort_by(compare);
+        Ok(symbols.into_iter().cloned().collect())
     }
 
     pub fn read_symbol(&mut self, root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
@@ -406,6 +422,24 @@ mod dependency_tests {
             graph.get("sample.py::caller"),
             Some(&vec!["sample.py::helper".to_string()])
         );
+    }
+
+    #[test]
+    fn limited_symbol_search_keeps_exact_matches_and_stable_ties() {
+        let dir = tempdir().unwrap();
+        for index in 0..32 {
+            fs::write(
+                dir.path().join(format!("{index:02}.py")),
+                "def target_extra():\n    pass\ndef target():\n    pass\n",
+            )
+            .unwrap();
+        }
+        let mut index = SymbolIndex::default();
+        let first = index.find_symbols(dir.path(), "target", 3).unwrap();
+        assert_eq!(first.len(), 3);
+        assert!(first.iter().all(|symbol| symbol.name == "target"));
+        assert_eq!(first, index.find_symbols(dir.path(), "target", 3).unwrap());
+        assert!(first[0].path < first[1].path);
     }
 
     #[test]
