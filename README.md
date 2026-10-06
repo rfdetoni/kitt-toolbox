@@ -1,5 +1,9 @@
 # K.I.T.T. Toolbox
 
+## Release 0.4.2 — same-line symbol ordering
+
+Break top-k symbol ties by UTF-8 source offset and kind so duplicate names on one line retain source order. Keep the bounded borrowed-symbol optimization from 0.4.1. See [release notes](docs/RELEASE_0.4.2.md).
+
 ## Release 0.4.1 — execution boundary hardening
 
 Filter borrowed symbols before cloning; select bounded top-k results before sorting. Keep deterministic exact-match priority and tie ordering, while preserving filesystem refresh and external-edit detection.

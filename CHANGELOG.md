@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 — 2026-10-06
+
+- Preserve source order for duplicate symbol names on the same line at top-k cutoffs; revalidate bounded borrowed-symbol selection.
+
 ## 0.4.1 — 2026-10-06
 
 - Filter borrowed symbols before cloning; select bounded top-k results before sorting. Keep deterministic exact-match priority and tie ordering, while preserving filesystem refresh and external-edit detection.
