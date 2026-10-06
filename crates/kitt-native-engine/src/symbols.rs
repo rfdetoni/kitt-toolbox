@@ -223,6 +223,8 @@ impl SymbolIndex {
                 .then(left.path.cmp(&right.path))
                 .then(left.start_line.cmp(&right.start_line))
                 .then(left.qualified_name.cmp(&right.qualified_name))
+                .then(left.start_byte.cmp(&right.start_byte))
+                .then(left.kind.cmp(&right.kind))
         };
         let bounded = limit.clamp(1, 500);
         if symbols.len() > bounded {
@@ -440,6 +442,20 @@ mod dependency_tests {
         assert!(first.iter().all(|symbol| symbol.name == "target"));
         assert_eq!(first, index.find_symbols(dir.path(), "target", 3).unwrap());
         assert!(first[0].path < first[1].path);
+    }
+
+    #[test]
+    fn same_line_duplicate_names_preserve_source_order_at_cutoff() {
+        let dir = tempdir().unwrap();
+        for file in 0..32 {
+            fs::write(dir.path().join(format!("{file:02}.js")), "function target() { return 1; } function target() { return 2; } function target() { return 3; }").unwrap();
+        }
+        for _ in 0..8 {
+            let mut index = SymbolIndex::default();
+            let selected = index.find_symbols(dir.path(), "target", 1).unwrap();
+            assert_eq!(selected[0].path, "00.js");
+            assert_eq!(selected[0].start_byte, 0);
+        }
     }
 
     #[test]
