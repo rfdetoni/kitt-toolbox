@@ -15,6 +15,8 @@ use model::{
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
+pub use symbols::SymbolIndexStatus;
+
 pub struct NativeEngine {
     root: PathBuf,
     symbol_index: Mutex<symbols::SymbolIndex>,
@@ -48,6 +50,15 @@ impl NativeEngine {
 
     pub fn find_symbols(&self, query: &str, limit: usize) -> Result<Vec<Symbol>> {
         self.symbol_index()?.find_symbols(&self.root, query, limit)
+    }
+
+    pub fn invalidate_path(&self, path: &str) -> Result<()> {
+        self.symbol_index()?.invalidate(path);
+        Ok(())
+    }
+
+    pub fn symbol_index_status(&self) -> Result<SymbolIndexStatus> {
+        Ok(self.symbol_index()?.status())
     }
 
     pub fn read_symbol(&self, id: &str) -> Result<Option<SymbolRead>> {

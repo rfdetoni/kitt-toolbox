@@ -1,5 +1,11 @@
 # K.I.T.T. Toolbox
 
+## Release 0.4.3 — Contained and bounded native symbol queries
+
+Native symbol reads, indexing, references and dependency reads use contained snapshots and reject traversal, absolute paths and symlinks. Each source is bounded to 4 MiB. Scans have file, entry, byte, symbol and elapsed-time budgets and expose partial-index metadata. Repeated queries reuse a scan for one second; KITT-owned writes invalidate changed paths immediately. Direct symbol reads parse the current bounded snapshot to avoid stale offsets. External edits become discoverable on the next scan after the one-second interval.
+
+See [release notes](docs/RELEASE_0.4.3.md).
+
 ## Release 0.4.2 — same-line symbol ordering
 
 Break top-k symbol ties by UTF-8 source offset and kind so duplicate names on one line retain source order. Keep the bounded borrowed-symbol optimization from 0.4.1. See [release notes](docs/RELEASE_0.4.2.md).

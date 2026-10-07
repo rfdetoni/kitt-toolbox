@@ -68,6 +68,18 @@ impl Engine {
         to_py(py, &value)
     }
 
+    fn invalidate_path(&self, py: Python<'_>, path: String) -> PyResult<()> {
+        py.allow_threads(|| self.inner.invalidate_path(&path))
+            .map_err(runtime_error)
+    }
+
+    fn symbol_index_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let value = py
+            .allow_threads(|| self.inner.symbol_index_status())
+            .map_err(runtime_error)?;
+        to_py(py, &value)
+    }
+
     fn read_symbol<'py>(&self, py: Python<'py>, symbol_id: String) -> PyResult<Bound<'py, PyAny>> {
         let value = py
             .allow_threads(|| self.inner.read_symbol(&symbol_id))

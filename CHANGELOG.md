@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 — 2026-10-07
+
+Native symbol reads, indexing, references and dependency reads use contained snapshots and reject traversal, absolute paths and symlinks. Each source is bounded to 4 MiB. Scans have file, entry, byte, symbol and elapsed-time budgets and expose partial-index metadata. Repeated queries reuse a scan for one second; KITT-owned writes invalidate changed paths immediately. Direct symbol reads parse the current bounded snapshot to avoid stale offsets. External edits become discoverable on the next scan after the one-second interval.
+
 ## 0.4.2 — 2026-10-06
 
 - Preserve source order for duplicate symbol names on the same line at top-k cutoffs; revalidate bounded borrowed-symbol selection.

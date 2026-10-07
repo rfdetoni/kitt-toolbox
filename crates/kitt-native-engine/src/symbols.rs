@@ -2,12 +2,48 @@ use crate::language::{grammar, identify, kind_label, name_of, symbol_kinds};
 use crate::model::{Symbol, SymbolRead, SymbolReference};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tree_sitter::{Node, Parser};
+
+const MAX_SYMBOL_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_INDEX_FILES: usize = 10_000;
+const MAX_INDEX_ENTRIES: usize = 100_000;
+const MAX_INDEX_SYMBOLS: usize = 100_000;
+const MAX_FILE_SYMBOLS: usize = 10_000;
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const SCAN_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn read_source(root: &Path, relative: &str) -> Result<(std::path::PathBuf, String, Vec<u8>)> {
+    let (path, display) = crate::workspace::contained_existing(root, relative)?;
+    let metadata = fs::metadata(&path)?;
+    anyhow::ensure!(metadata.is_file(), "symbol path is not a regular file");
+    anyhow::ensure!(
+        metadata.len() <= MAX_SYMBOL_FILE_BYTES,
+        "symbol file exceeds read limit"
+    );
+    let file = fs::File::open(&path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(metadata.is_file(), "symbol path is not a regular file");
+    anyhow::ensure!(
+        metadata.len() <= MAX_SYMBOL_FILE_BYTES,
+        "symbol file exceeds read limit"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_SYMBOL_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_SYMBOL_FILE_BYTES,
+        "symbol file exceeds read limit"
+    );
+    Ok((path, display, bytes))
+}
 
 fn hash_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -30,6 +66,9 @@ fn visit_symbols(
     parents: &mut Vec<String>,
     out: &mut Vec<Symbol>,
 ) {
+    if out.len() >= MAX_FILE_SYMBOLS {
+        return;
+    }
     let is_symbol = kinds.iter().any(|kind| *kind == node.kind());
     let mut pushed = false;
     if is_symbol && let Some(name) = name_of(node, source) {
@@ -97,20 +136,37 @@ struct CachedSymbols {
 #[derive(Default)]
 pub struct SymbolIndex {
     files: HashMap<String, CachedSymbols>,
+    last_refresh: Option<Instant>,
+    status: SymbolIndexStatus,
+}
+
+#[derive(Default, Debug, Clone, Serialize)]
+pub struct SymbolIndexStatus {
+    pub truncated: bool,
+    pub skipped_files: usize,
+    pub scanned_entries: usize,
+    pub indexed_files: usize,
+    pub indexed_bytes: u64,
 }
 
 impl SymbolIndex {
     pub fn invalidate(&mut self, relative: &str) {
         self.files.remove(&relative.replace('\\', "/"));
+        self.last_refresh = None;
+    }
+
+    pub fn status(&self) -> SymbolIndexStatus {
+        self.status.clone()
     }
 
     fn refresh_path(&mut self, root: &Path, relative: &str) -> Result<()> {
         let normalized = relative.replace('\\', "/");
-        let path = root.join(&normalized);
-        if identify(&path).is_none() {
+        let lexical = root.join(&normalized);
+        if identify(&lexical).is_none() {
             self.files.remove(&normalized);
             return Ok(());
         }
+        let (path, normalized) = crate::workspace::contained_existing(root, &normalized)?;
         let metadata = match fs::metadata(&path) {
             Ok(value) if value.is_file() => value,
             _ => {
@@ -118,6 +174,10 @@ impl SymbolIndex {
                 return Ok(());
             }
         };
+        anyhow::ensure!(
+            metadata.len() <= MAX_SYMBOL_FILE_BYTES,
+            "symbol file exceeds read limit"
+        );
         let stamp = mtime_ns(&metadata);
         let size = metadata.len();
         if self
@@ -128,7 +188,7 @@ impl SymbolIndex {
             return Ok(());
         }
 
-        let source = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let (_, _, source) = read_source(root, &normalized)?;
         let symbols = parse_symbols(&path, &normalized, &source)?;
         self.files.insert(
             normalized,
@@ -142,45 +202,79 @@ impl SymbolIndex {
     }
 
     fn refresh(&mut self, root: &Path, max_files: usize) -> Result<()> {
-        let max_files = max_files.max(1);
-        let mut seen = HashSet::new();
-        let mut count = 0usize;
-        let mut complete = true;
-
-        for entry in WalkBuilder::new(root)
-            .hidden(true)
-            .git_ignore(true)
-            .build()
-            .filter_map(Result::ok)
+        if self
+            .last_refresh
+            .is_some_and(|time| time.elapsed() < REFRESH_INTERVAL)
         {
-            if !entry
-                .file_type()
-                .map(|value| value.is_file())
-                .unwrap_or(false)
+            return Ok(());
+        }
+        let max_files = max_files.clamp(1, MAX_INDEX_FILES);
+        let started = Instant::now();
+        let mut seen = HashSet::new();
+        let mut status = SymbolIndexStatus::default();
+        let mut symbols = 0;
+
+        for entry in WalkBuilder::new(root).hidden(true).git_ignore(true).build() {
+            if status.scanned_entries >= MAX_INDEX_ENTRIES || started.elapsed() >= SCAN_TIMEOUT {
+                status.truncated = true;
+                break;
+            }
+            status.scanned_entries += 1;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    status.truncated = true;
+                    continue;
+                }
+            };
+            if !entry.file_type().is_some_and(|kind| kind.is_file())
+                || identify(entry.path()).is_none()
             {
                 continue;
             }
-            let path = entry.path();
-            if identify(path).is_none() {
-                continue;
-            }
-            if count >= max_files {
-                complete = false;
+            if status.indexed_files >= max_files || symbols >= MAX_INDEX_SYMBOLS {
+                status.truncated = true;
                 break;
             }
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(path)
+            let relative = entry
+                .path()
+                .strip_prefix(root)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            seen.insert(relative.clone());
-            self.refresh_path(root, &relative)?;
-            count += 1;
+            let size = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(_) => {
+                    status.truncated = true;
+                    status.skipped_files += 1;
+                    continue;
+                }
+            };
+            if size > MAX_SYMBOL_FILE_BYTES
+                || status.indexed_bytes.saturating_add(size) > MAX_INDEX_BYTES
+            {
+                self.files.remove(&relative);
+                status.truncated = true;
+                status.skipped_files += 1;
+                continue;
+            }
+            if self.refresh_path(root, &relative).is_err() {
+                self.files.remove(&relative);
+                status.truncated = true;
+                status.skipped_files += 1;
+                continue;
+            }
+            if let Some(file) = self.files.get(&relative) {
+                symbols += file.symbols.len();
+                status.truncated |= file.symbols.len() >= MAX_FILE_SYMBOLS;
+                status.indexed_bytes += file.size;
+                status.indexed_files += 1;
+                seen.insert(relative);
+            }
         }
-
-        if complete {
-            self.files.retain(|path, _| seen.contains(path));
-        }
+        // A bounded partial scan must not retain unseen files from previous generations.
+        self.files.retain(|path, _| seen.contains(path));
+        self.status = status;
+        self.last_refresh = Some(Instant::now());
         Ok(())
     }
 
@@ -236,29 +330,29 @@ impl SymbolIndex {
     }
 
     pub fn read_symbol(&mut self, root: &Path, symbol_id: &str) -> Result<Option<SymbolRead>> {
-        let relative = symbol_id.split("::").next().unwrap_or("");
-        if relative.is_empty() {
+        let relative = symbol_id
+            .split("::")
+            .next()
+            .unwrap_or("")
+            .replace('\\', "/");
+        if relative.is_empty() || identify(Path::new(&relative)).is_none() {
             return Ok(None);
         }
-        self.refresh_path(root, relative)?;
-        let Some(symbol) = self
-            .files
-            .get(relative)
-            .and_then(|entry| entry.symbols.iter().find(|symbol| symbol.id == symbol_id))
-            .cloned()
-        else {
+        if !root.join(&relative).exists() {
             return Ok(None);
-        };
-        let source = fs::read(root.join(relative))?;
-        let text = String::from_utf8_lossy(
-            source
-                .get(symbol.start_byte..symbol.end_byte)
-                .unwrap_or_default(),
-        )
-        .to_string();
-        Ok(Some(SymbolRead {
-            symbol,
-            source: text,
+        }
+        let (path, display, source) = read_source(root, &relative)?;
+        let normalized_id = symbol_id.replace('\\', "/");
+        let symbol = parse_symbols(&path, &display, &source)?
+            .into_iter()
+            .find(|symbol| symbol.id == normalized_id);
+        Ok(symbol.map(|symbol| {
+            let text =
+                String::from_utf8_lossy(&source[symbol.start_byte..symbol.end_byte]).to_string();
+            SymbolRead {
+                symbol,
+                source: text,
+            }
         }))
     }
 
@@ -275,14 +369,25 @@ impl SymbolIndex {
         paths.sort();
 
         let mut out = Vec::new();
+        let limit = limit.clamp(1, 500);
+        let started = Instant::now();
+        let mut read_bytes = 0u64;
         for relative in paths {
             if out.len() >= limit {
                 break;
             }
-            let bytes = match fs::read(root.join(&relative)) {
-                Ok(value) => value,
-                Err(_) => continue,
+            if started.elapsed() >= SCAN_TIMEOUT || read_bytes >= MAX_INDEX_BYTES {
+                self.status.truncated = true;
+                break;
+            }
+            let bytes = match read_source(root, &relative) {
+                Ok((_, _, bytes)) => bytes,
+                Err(_) => {
+                    self.status.truncated = true;
+                    continue;
+                }
             };
+            read_bytes += bytes.len() as u64;
             let text = String::from_utf8_lossy(&bytes);
             let symbols = self
                 .files
@@ -331,10 +436,24 @@ impl SymbolIndex {
         let callish = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|\.)")?;
         let mut graph = HashMap::new();
         let mut sources: HashMap<String, Vec<u8>> = HashMap::new();
+        let started = Instant::now();
+        let mut read_bytes = 0u64;
 
-        for symbol in symbols.iter().take(max_symbols) {
+        for symbol in symbols.iter().take(max_symbols.min(MAX_INDEX_SYMBOLS)) {
+            if started.elapsed() >= SCAN_TIMEOUT || read_bytes >= MAX_INDEX_BYTES {
+                self.status.truncated = true;
+                break;
+            }
             if !sources.contains_key(&symbol.path) {
-                sources.insert(symbol.path.clone(), fs::read(root.join(&symbol.path))?);
+                let bytes = match read_source(root, &symbol.path) {
+                    Ok((_, _, bytes)) => bytes,
+                    Err(_) => {
+                        self.status.truncated = true;
+                        continue;
+                    }
+                };
+                read_bytes += bytes.len() as u64;
+                sources.insert(symbol.path.clone(), bytes);
             }
             let source = sources
                 .get(&symbol.path)
@@ -377,16 +496,7 @@ fn containing_symbol(symbols: &[Symbol], line: usize) -> Option<&Symbol> {
 
 pub(crate) fn read_symbol_snapshot(root: &Path, symbol_id: &str) -> Result<(SymbolRead, Vec<u8>)> {
     let relative = symbol_id.split("::").next().unwrap_or("");
-    let (path, display) = crate::workspace::contained_existing(root, relative)?;
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    fs::File::open(&path)?
-        .take(4 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    anyhow::ensure!(
-        bytes.len() <= 4 * 1024 * 1024,
-        "symbol file exceeds read limit"
-    );
+    let (path, display, bytes) = read_source(root, relative)?;
     let symbol = parse_symbols(&path, &display, &bytes)?
         .into_iter()
         .find(|symbol| symbol.id == symbol_id)
@@ -409,6 +519,92 @@ fn dependency_edges(root: &Path, max_symbols: usize) -> Result<HashMap<String, V
 mod dependency_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn symbol_reads_refuse_traversal_absolute_paths_and_symlinks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("outside.py");
+        fs::write(&outside, "def target():\n    return 1\n").unwrap();
+        let mut index = SymbolIndex::default();
+        assert!(index.read_symbol(&root, "../outside.py::target").is_err());
+        assert!(
+            index
+                .read_symbol(&root, &format!("{}::target", outside.display()))
+                .is_err()
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("linked.py")).unwrap();
+            assert!(index.read_symbol(&root, "linked.py::target").is_err());
+        }
+        fs::write(root.join("safe.py"), "def target():\n    return 2\n").unwrap();
+        assert!(
+            index
+                .read_symbol(&root, "safe.py::target")
+                .unwrap()
+                .unwrap()
+                .source
+                .contains("return 2")
+        );
+    }
+
+    #[test]
+    fn oversized_sources_are_skipped_and_cached_scan_reports_partial_results() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("large.py"),
+            vec![b' '; MAX_SYMBOL_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        fs::write(dir.path().join("safe.py"), "def target():\n    return 1\n").unwrap();
+        let mut index = SymbolIndex::default();
+        assert_eq!(
+            index.find_symbols(dir.path(), "target", 5).unwrap().len(),
+            1
+        );
+        assert!(index.status().truncated);
+        assert_eq!(index.status().skipped_files, 1);
+        assert!(index.read_symbol(dir.path(), "large.py::target").is_err());
+        let refreshed = index.last_refresh;
+        index.find_symbols(dir.path(), "target", 5).unwrap();
+        index.find_references(dir.path(), "target", 5).unwrap();
+        index.dependency_edges(dir.path(), 10).unwrap();
+        assert_eq!(index.last_refresh, refreshed);
+        fs::write(
+            dir.path().join("new.py"),
+            "def new_target():\n    return 1\n",
+        )
+        .unwrap();
+        index.invalidate("new.py");
+        assert_eq!(
+            index
+                .find_symbols(dir.path(), "new_target", 5)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn direct_symbol_read_uses_current_source_offsets_even_when_scan_is_cached() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("safe.py"), "def target():\n    return 1\n").unwrap();
+        let mut index = SymbolIndex::default();
+        index.find_symbols(dir.path(), "target", 5).unwrap();
+        fs::write(
+            dir.path().join("safe.py"),
+            "# shifted offsets\ndef target():\n    return 42\n",
+        )
+        .unwrap();
+        let read = index
+            .read_symbol(dir.path(), "safe.py::target")
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.symbol.start_line, 2);
+        assert!(read.source.contains("return 42"));
+    }
 
     #[test]
     fn dependency_edges_use_scanned_symbol_offsets() {
@@ -474,6 +670,7 @@ mod dependency_tests {
             "def second_name():\n    return 2\n",
         )
         .unwrap();
+        index.invalidate("sample.py");
         let updated = index.find_symbols(dir.path(), "second_name", 10).unwrap();
         assert_eq!(updated.len(), 1);
     }
