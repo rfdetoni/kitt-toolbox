@@ -125,11 +125,9 @@ pub fn read_file_from_byte(
     // Line offsets are derived by scanning the bounded file, not by storing
     // an index proportional to the number of newlines (up to 32 MiB on x64).
     let line_starts = || {
-        std::iter::once(0).chain(
-            bytes.iter().enumerate().filter_map(|(offset, byte)| {
-                (*byte == b'\n' && offset + 1 < bytes.len()).then_some(offset + 1)
-            }),
-        )
+        std::iter::once(0).chain(bytes.iter().enumerate().filter_map(|(offset, byte)| {
+            (*byte == b'\n' && offset + 1 < bytes.len()).then_some(offset + 1)
+        }))
     };
     let mut total_lines = 0usize;
     let mut start = start_byte.unwrap_or(bytes.len());
