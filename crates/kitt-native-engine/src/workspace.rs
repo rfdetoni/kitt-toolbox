@@ -1,6 +1,7 @@
 use crate::model::{FileListResponse, FileReadResponse};
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
+use std::collections::BinaryHeap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -204,7 +205,9 @@ pub fn list_files(
 
     let limit = limit.clamp(1, 500);
     let char_budget = token_budget.clamp(64, 8_000).saturating_mul(4);
-    let mut candidates = Vec::new();
+    // Retain only the lexicographically smallest page, regardless of directory size.
+    let mut candidates = BinaryHeap::with_capacity(limit);
+    let mut total = 0usize;
 
     for entry in fs::read_dir(&directory)? {
         let entry = match entry {
@@ -226,16 +229,21 @@ pub fn list_files(
             Ok(value) => value.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        candidates.push(relative);
+        total += 1;
+        if candidates.len() < limit {
+            candidates.push(relative);
+        } else if let Some(mut largest) = candidates.peek_mut()
+            && relative < *largest
+        {
+            *largest = relative;
+        }
     }
-    candidates.sort();
 
-    let total = candidates.len();
-    let mut files = Vec::new();
+    let mut files = Vec::with_capacity(candidates.len());
     let mut chars = 0usize;
-    for value in candidates.into_iter().take(limit) {
+    for value in candidates.into_sorted_vec() {
         let extra = value.chars().count() + usize::from(!files.is_empty());
-        if !files.is_empty() && chars.saturating_add(extra) > char_budget {
+        if chars.saturating_add(extra) > char_budget {
             break;
         }
         chars += extra;
@@ -243,11 +251,10 @@ pub fn list_files(
     }
 
     let omitted = total.saturating_sub(files.len());
-    let joined = files.join("\n");
     Ok(FileListResponse {
         files,
         omitted,
-        estimated_tokens: estimated_tokens(&joined),
+        estimated_tokens: chars.div_ceil(4),
     })
 }
 
@@ -279,6 +286,23 @@ mod tests {
         assert!(response.next_start_line.is_some());
         assert!(read_file(&root, "../outside", 1, None, 1024, 64).is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_page_retains_only_smallest_names_and_counts_omissions() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in (0..1000).rev() {
+            fs::write(dir.path().join(format!("file-{i:04}.txt")), b"").unwrap();
+        }
+        fs::create_dir(dir.path().join("aaa")).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let result = list_files(&root, ".", 5, 64).unwrap();
+        assert_eq!(
+            result.files,
+            (0..5).map(|i| format!("file-{i:04}.txt")).collect::<Vec<_>>()
+        );
+        assert_eq!(result.omitted, 995);
+        assert!(result.estimated_tokens <= 64);
     }
 
     #[test]
