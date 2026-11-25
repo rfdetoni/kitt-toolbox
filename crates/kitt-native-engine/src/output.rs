@@ -133,7 +133,10 @@ fn compress_search(raw: &str) -> (String, usize) {
         // Only the first 40 sorted file groups are emitted. Keep exactly
         // those groups while still counting every match for omission metrics.
         if !grouped.contains_key(file) && grouped.len() >= 40 {
-            if grouped.last_key_value().is_some_and(|(last, _)| file >= last.as_str()) {
+            if grouped
+                .last_key_value()
+                .is_some_and(|(last, _)| file >= last.as_str())
+            {
                 continue;
             }
             grouped.pop_last();

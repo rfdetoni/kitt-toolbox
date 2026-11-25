@@ -299,7 +299,9 @@ mod tests {
         let result = list_files(&root, ".", 5, 64).unwrap();
         assert_eq!(
             result.files,
-            (0..5).map(|i| format!("file-{i:04}.txt")).collect::<Vec<_>>()
+            (0..5)
+                .map(|i| format!("file-{i:04}.txt"))
+                .collect::<Vec<_>>()
         );
         assert_eq!(result.omitted, 995);
         assert!(result.estimated_tokens <= 64);
