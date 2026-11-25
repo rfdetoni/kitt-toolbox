@@ -1,7 +1,9 @@
 use crate::model::CompressionResponse;
 use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 const DEFAULT_TOKEN_BUDGET: usize = 1200;
 const MIN_TOKEN_BUDGET: usize = 64;
@@ -118,7 +120,8 @@ fn finalize(
 }
 
 fn compress_search(raw: &str) -> (String, usize) {
-    let re = Regex::new(r"^(.*?):(\d+)(?::\d+)?:?(.*)$").unwrap();
+    static SEARCH_LINE: OnceLock<Regex> = OnceLock::new();
+    let re = SEARCH_LINE.get_or_init(|| Regex::new(r"^(.*?):(\d+)(?::\d+)?:?(.*)$").unwrap());
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut total = 0usize;
     for line in raw.lines() {
@@ -126,9 +129,19 @@ fn compress_search(raw: &str) -> (String, usize) {
             continue;
         };
         total += 1;
-        let items = grouped
-            .entry(c.get(1).unwrap().as_str().to_string())
-            .or_default();
+        let file = c.get(1).unwrap().as_str();
+        // Only the first 40 sorted file groups are emitted. Keep exactly
+        // those groups while still counting every match for omission metrics.
+        if !grouped.contains_key(file) && grouped.len() >= 40 {
+            if grouped
+                .last_key_value()
+                .is_some_and(|(last, _)| file >= last.as_str())
+            {
+                continue;
+            }
+            grouped.pop_last();
+        }
+        let items = grouped.entry(file.to_string()).or_default();
         if items.len() < 8 {
             items.push(format!(
                 "{}:{}",
@@ -352,18 +365,18 @@ pub fn compress_with_budget(
     returncode: i32,
     token_budget: usize,
 ) -> CompressionResponse {
-    let raw = if stderr.is_empty() {
-        stdout.to_string()
+    let raw: Cow<'_, str> = if stderr.is_empty() {
+        Cow::Borrowed(stdout)
     } else if stdout.is_empty() {
-        stderr.to_string()
+        Cow::Borrowed(stderr)
     } else {
-        format!("{stdout}\n{stderr}")
+        Cow::Owned(format!("{stdout}\n{stderr}"))
     };
     let fam = family(argv);
     if raw.is_empty()
         || estimate_tokens(&raw) <= token_budget.clamp(MIN_TOKEN_BUDGET, MAX_TOKEN_BUDGET)
     {
-        return finalize(&raw, raw.clone(), fam, 0, token_budget);
+        return finalize(&raw, String::new(), fam, 0, token_budget);
     }
     let (candidate, omitted) = match fam {
         "search" => compress_search(&raw),
@@ -457,6 +470,20 @@ mod tests {
         let r = compress_with_budget(&["git".into(), "diff".into()], &rows.join("\n"), "", 0, 128);
         assert_eq!(r.output.matches("-same").count(), 2);
         assert_eq!(r.output.matches("+same").count(), 2);
+    }
+
+    #[test]
+    fn search_keeps_smallest_groups_independent_of_input_order() {
+        let raw = (0..1000)
+            .rev()
+            .map(|i| format!("file-{i:04}.py:1:match"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (candidate, omitted) = compress_search(&raw);
+        assert!(candidate.contains("file-0000.py"));
+        assert!(candidate.contains("file-0039.py"));
+        assert!(!candidate.contains("file-0040.py"));
+        assert_eq!(omitted, 960);
     }
 
     #[test]
