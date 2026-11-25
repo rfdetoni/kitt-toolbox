@@ -122,26 +122,40 @@ pub fn read_file_from_byte(
         return Err(anyhow!("file exceeds read limit"));
     }
     let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!("read_file requires UTF-8 text"))?;
-    let mut starts = vec![0];
-    for (offset, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' && offset + 1 < bytes.len() {
-            starts.push(offset + 1);
+    // Line offsets are derived by scanning the bounded file, not by storing
+    // an index proportional to the number of newlines (up to 32 MiB on x64).
+    let line_starts = || {
+        std::iter::once(0).chain(
+            bytes.iter().enumerate().filter_map(|(offset, byte)| {
+                (*byte == b'\n' && offset + 1 < bytes.len()).then_some(offset + 1)
+            }),
+        )
+    };
+    let mut total_lines = 0usize;
+    let mut start = start_byte.unwrap_or(bytes.len());
+    let mut first_line = 1usize;
+    for (index, offset) in line_starts().enumerate() {
+        total_lines = index + 1;
+        if start_byte.is_none() && index == start_line.max(1) - 1 {
+            start = offset;
+        }
+        if offset <= start {
+            first_line = index + 1;
         }
     }
-    let total_lines = if bytes.is_empty() { 0 } else { starts.len() };
-    let start =
-        start_byte.unwrap_or_else(|| *starts.get(start_line.max(1) - 1).unwrap_or(&bytes.len()));
+    if bytes.is_empty() {
+        total_lines = 0;
+    }
     if start > bytes.len() || !text.is_char_boundary(start) {
         return Err(anyhow!(
             "start_byte must be a UTF-8 byte boundary within the file"
         ));
     }
-    let first_line = starts.partition_point(|offset| *offset <= start).max(1);
     let requested_end_line = end_line
         .unwrap_or(first_line.saturating_add(199))
         .max(first_line)
         .min(first_line.saturating_add(4999));
-    let requested_end = *starts.get(requested_end_line).unwrap_or(&bytes.len());
+    let requested_end = line_starts().nth(requested_end_line).unwrap_or(bytes.len());
     let byte_budget = if max_bytes == 0 {
         DEFAULT_MAX_FILE_BYTES
     } else {
@@ -162,16 +176,20 @@ pub fn read_file_from_byte(
         return Err(anyhow!("read budget cannot fit the next UTF-8 character"));
     }
     let content = text[start..end].to_string();
+    let truncated = end < bytes.len();
+    let partial_line_truncated = truncated && end > 0 && bytes[end - 1] != b'\n';
+    let mut before_end = 0usize;
+    let mut through_end = 0usize;
+    for offset in line_starts().take_while(|offset| *offset <= end) {
+        through_end += 1;
+        before_end += usize::from(offset < end);
+    }
     let returned_end = if bytes.is_empty() {
         0
     } else {
-        starts
-            .partition_point(|offset| *offset < end)
-            .max(first_line)
+        before_end.max(first_line)
     };
-    let truncated = end < bytes.len();
-    let partial_line_truncated = truncated && end > 0 && bytes[end - 1] != b'\n';
-    let next_start_line = truncated.then(|| starts.partition_point(|offset| *offset <= end).max(1));
+    let next_start_line = truncated.then(|| through_end.max(1));
     Ok(FileReadResponse {
         path: display,
         content_hash: sha256_bytes(content.as_bytes()),
@@ -305,6 +323,33 @@ mod tests {
         );
         assert_eq!(result.omitted, 995);
         assert!(result.estimated_tokens <= 64);
+    }
+
+    #[test]
+    fn newline_dense_file_preserves_cursor_and_line_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(root.join("dense.txt"), vec![b'\n'; DEFAULT_MAX_FILE_BYTES]).unwrap();
+        let result = read_file(&root, "dense.txt", 3000000, Some(3000002), 1024, 64).unwrap();
+        assert_eq!(result.content, "\n\n\n");
+        assert_eq!(result.start_line, 3000000);
+        assert_eq!(result.end_line, 3000002);
+        assert_eq!(result.total_lines, DEFAULT_MAX_FILE_BYTES);
+        assert_eq!(result.next_start_line, Some(3000003));
+        assert_eq!(result.next_start_byte, Some(3000002));
+        let end = read_file_from_byte(
+            &root,
+            "dense.txt",
+            1,
+            None,
+            1024,
+            64,
+            Some(DEFAULT_MAX_FILE_BYTES),
+        )
+        .unwrap();
+        assert_eq!(end.start_line, DEFAULT_MAX_FILE_BYTES);
+        assert_eq!(end.end_line, DEFAULT_MAX_FILE_BYTES);
+        assert!(end.content.is_empty());
     }
 
     #[test]
