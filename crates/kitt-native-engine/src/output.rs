@@ -341,20 +341,29 @@ fn compress_build(raw: &str, success: bool) -> (String, usize) {
 }
 
 fn compress_generic(raw: &str) -> (String, usize) {
-    let lines: Vec<&str> = raw.lines().collect();
-    if lines.len() <= 80 {
+    let bytes = raw.as_bytes();
+    let mut line_count = if bytes.is_empty() { 0 } else { 1 };
+    let mut head_end = raw.len();
+    let mut tail_starts = [0usize; 24];
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' && offset + 1 < bytes.len() {
+            if line_count == 40 {
+                head_end = offset;
+            }
+            tail_starts[line_count % 24] = offset + 1;
+            line_count += 1;
+        }
+    }
+    if line_count <= 80 {
         return (raw.to_string(), 0);
     }
-    let head = 40usize.min(lines.len());
-    let tail = 24usize.min(lines.len().saturating_sub(head));
-    let omitted = lines.len().saturating_sub(head + tail);
-    let mut out = lines[..head].join("\n");
+    let omitted = line_count.saturating_sub(64);
+    let tail_start = tail_starts[(line_count - 24) % 24];
+    let mut out = String::from(&raw[..head_end]);
     if omitted > 0 {
         out.push_str(&format!("\n… {omitted} line(s) omitted …\n"));
     }
-    if tail > 0 {
-        out.push_str(&lines[lines.len() - tail..].join("\n"));
-    }
+    out.push_str(&raw[tail_start..]);
     (out, omitted)
 }
 

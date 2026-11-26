@@ -7,12 +7,26 @@ use crate::workspace::contained_existing;
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use tempfile::NamedTempFile;
 use tree_sitter::Parser;
 static EDIT_LOCK: Mutex<()> = Mutex::new(());
+const MAX_EDIT_FILE_BYTES: usize = 4 * 1024 * 1024;
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_EDIT_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_EDIT_FILE_BYTES {
+        return Err(anyhow!(
+            "file exceeds edit limit ({MAX_EDIT_FILE_BYTES} bytes)"
+        ));
+    }
+    Ok(bytes)
+}
 
 fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -46,7 +60,7 @@ fn persist_atomic(
     temp.as_file().sync_all()?;
     temp.as_file().set_permissions(metadata.permissions())?;
     if fs::symlink_metadata(path)?.file_type().is_symlink()
-        || hash(&fs::read(path)?) != expected_hash
+        || hash(&read_bounded(path)?) != expected_hash
     {
         return Err(anyhow!(
             "optimistic edit conflict: file changed before persistence"
@@ -71,7 +85,7 @@ pub fn replace_block(root: &Path, request: BlockReplaceRequest) -> Result<BlockR
         return Err(anyhow!("path is not a regular file"));
     }
 
-    let original = fs::read(&path)?;
+    let original = read_bounded(&path)?;
     let old_file_hash = hash(&original);
     if let Some(expected) = &request.expected_file_hash
         && expected != &old_file_hash
