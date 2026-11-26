@@ -68,10 +68,19 @@ pub fn search(root: &Path, query: &str, options: SearchOptions) -> Result<Search
         if meta.len() > 4 * 1024 * 1024 {
             continue;
         }
-        let bytes = match fs::read(path) {
-            Ok(v) => v,
-            Err(_) => continue,
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        let Ok(file) = fs::File::open(path) else {
+            continue;
         };
+        if file
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > 4 * 1024 * 1024
+        {
+            continue;
+        }
         if bytes.iter().take(8192).any(|b| *b == 0) {
             continue;
         }
